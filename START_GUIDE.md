@@ -475,6 +475,60 @@ The terminal and JSON summary report, for each torso/wrist/ankle target:
 The CSV contains one row per 50 Hz output frame. Generated files under
 `outputs/` remain local and are not committed to Git.
 
+### Export All Recordings
+
+Process all twelve MVNX recordings without opening a window:
+
+```bash
+python3 batch_export.py
+```
+
+This can take a long time because every 50 Hz output frame requires several IK
+solutions. Progress is printed as `[current/total]`. One failed recording does
+not discard reports already produced for earlier recordings.
+
+The default output structure is:
+
+```text
+outputs/xsens-g1-batch/
+|-- manifest.json
+|-- summary.csv
+|-- bending-forward/
+|   |-- diagnostics.json
+|   |-- diagnostics.csv
+|   `-- sonic_reference/
+|       |-- joint_pos.csv
+|       |-- joint_vel.csv
+|       |-- body_pos.csv
+|       |-- body_quat.csv
+|       |-- metadata.txt
+|       |-- trajectory_metadata.json
+|       `-- info.txt
+`-- one equivalent directory for every other recording
+```
+
+`summary.csv` is the first file to inspect. It provides one row per recording
+with frame count, duration, torso/wrist/ankle errors, speed-limited frames, and
+near-limit frames.
+
+The `sonic_reference` files follow SONIC's documented 50 Hz joint-reference
+layout. Joint values are mapped by name into its 29-joint IsaacLab order rather
+than assuming the URDF, Pinocchio, Isaac, and SONIC array indexes match. Root
+position is XYZ and root orientation is WXYZ.
+
+These files are reference trajectories, not motor commands. Producing them does
+not prove that SONIC can track the movement under gravity.
+
+To review every clip visually instead of running headlessly:
+
+```bash
+python3 batch_export.py --visible
+```
+
+Isaac pauses after each clip. Close its window to launch the next recording.
+Use `--dry-run` to inspect all commands without launching anything, or
+`--max-frames 50` for a short pipeline test of every recording.
+
 Do not use `--dynamic` expecting stable movement. It enables gravity without a
 balance controller and demonstrates why IK alone is insufficient.
 

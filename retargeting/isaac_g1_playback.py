@@ -42,6 +42,7 @@ parser.add_argument("--screenshot", type=Path, help="Capture the viewport at --s
 parser.add_argument("--screenshot-frame", type=int, default=0, help="Zero-based output frame to capture")
 parser.add_argument("--diagnostics-json", type=Path, help="Write per-frame diagnostics and summary as JSON")
 parser.add_argument("--diagnostics-csv", type=Path, help="Write per-frame diagnostics as CSV")
+parser.add_argument("--trajectory-dir", type=Path, help="Write a SONIC-compatible 50 Hz G1 reference directory")
 parser.add_argument(
     "--dynamic",
     action="store_true",
@@ -91,6 +92,7 @@ if str(ROOT) not in sys.path:
 
 from retargeting.diagnostics import DiagnosticsRecorder, FrameDiagnostics
 from retargeting.mvnx import MvnxFrame, iter_frames, read_metadata
+from retargeting.trajectory import TrajectoryRecorder
 from retargeting.xsens_skeleton import IK_SOURCE_SEGMENTS, display_positions, edge_indices
 
 
@@ -506,6 +508,7 @@ def main() -> int:
     g1 = Articulation("/World/G1")
     retargeter = G1Retargeter(args.g1_urdf, metadata, frames[0], args.scale)
     recorder = DiagnosticsRecorder(tuple(TASK_LABELS.values()))
+    trajectory = TrajectoryRecorder(str(args.mvnx), OUTPUT_RATE)
     xsens_display = None if args.hide_xsens else XsensSkeletonDisplay(metadata, frames[0], args.xsens_offset_y)
     if xsens_display:
         xsens_display.update(frames[0])
@@ -548,11 +551,19 @@ def main() -> int:
                 q, diagnostics, targets, achieved = retargeter.solve(frame, args.ik_steps, args.max_joint_speed)
                 if played < len(frames):
                     recorder.add(diagnostics)
+                joint_positions = {
+                    name: float(q[index]) for name, index in retargeter.controlled_joint_indices
+                }
+                controlled_q = np.asarray(
+                    [joint_positions[name] for name in retargeter.robot.controlled_joint_names]
+                )
                 if previous_q is not None:
-                    maximum_joint_step = max(maximum_joint_step, float(np.max(np.abs(q - previous_q))))
-                previous_q = q
-                isaac_positions[controlled_indices] = q
+                    maximum_joint_step = max(maximum_joint_step, float(np.max(np.abs(controlled_q - previous_q))))
+                previous_q = controlled_q
+                isaac_positions[controlled_indices] = controlled_q
                 root_position, root_orientation = retargeter.root_pose(frame)
+                if played < len(frames):
+                    trajectory.add(frame.index, joint_positions, root_position, root_orientation)
                 if xsens_display:
                     xsens_display.update(frame)
                 if diagnostics_display:
@@ -624,6 +635,8 @@ def main() -> int:
                     print(f"Wrote diagnostics JSON: {recorder.write_json(args.diagnostics_json)}")
                 if args.diagnostics_csv:
                     print(f"Wrote diagnostics CSV: {recorder.write_csv(args.diagnostics_csv)}")
+                if args.trajectory_dir:
+                    print(f"Wrote SONIC trajectory: {trajectory.write(args.trajectory_dir)}")
         finally:
             app_utils.stop()
             simulation_app.close()

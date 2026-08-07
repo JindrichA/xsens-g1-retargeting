@@ -74,6 +74,33 @@ Reports contain errors after joint-speed limiting, so they describe the exact
 configuration sent to Isaac. The ignored `outputs/` directory is intended for
 local generated reports.
 
+Export one clip as a 50 Hz SONIC reference directory:
+
+```bash
+./run_isaac_g1_playback.sh --headless --no-realtime \
+  --trajectory-dir outputs/bending-forward/sonic_reference
+```
+
+Export all local MVNX recordings with diagnostics and trajectories:
+
+```bash
+python3 batch_export.py
+```
+
+The batch output includes `manifest.json`, an aggregate `summary.csv`, per-clip
+diagnostic JSON/CSV, and SONIC-format `joint_pos.csv`, `joint_vel.csv`, root
+`body_pos.csv`, root `body_quat.csv`, and metadata. Joints are explicitly
+reordered by name into SONIC's 29-DOF IsaacLab order. These are kinematic
+references and still require SONIC dynamic validation before hardware use.
+The first complete measured run and its main findings are recorded in
+[`docs/baseline.md`](docs/baseline.md).
+
+Preview every generated command without launching Isaac:
+
+```bash
+python3 batch_export.py --dry-run
+```
+
 For a finite headless check:
 
 ```bash

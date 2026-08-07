@@ -13,6 +13,7 @@ models, and sibling upstream projects are deliberately kept outside Git.
 |-- Documentation/              Supplied lightweight PDF references
 |-- retargeting/                MVNX parser and G1 retargeting implementation
 |-- tests/                      Unit tests that need no simulator or ROS
+|-- batch_export.py             All-recording diagnostics and trajectory export
 |-- motionctl.py                Recorded-motion inspection CLI
 |-- retargetctl.py              Stack checks and process orchestration
 |-- run_isaac_g1_playback.sh    Isaac Sim launcher
