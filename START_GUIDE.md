@@ -405,8 +405,14 @@ What happens:
 
 1. Isaac Sim starts. Startup may take several seconds.
 2. The G1 asset is loaded at the world origin.
-3. `Bending forward.mvnx` is read and retargeted.
-4. The G1 repeats the motion until you close Isaac Sim.
+3. The original Xsens skeleton appears beside the G1.
+4. `Bending forward.mvnx` is read and retargeted.
+5. Both figures repeat the synchronized motion until you close Isaac Sim.
+
+The human skeleton uses cyan for the left side, orange for the right side, and
+green feet for active Xsens contacts. Larger points mark the pelvis, torso,
+hands, and feet used as retargeting sources. Use `--hide-xsens` to hide the
+human or `--xsens-offset-y 2.0` to increase the space between the figures.
 
 The terminal should print:
 

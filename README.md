@@ -51,7 +51,11 @@ The default clip is `Bending forward.mvnx`, so this is also sufficient:
 ```
 
 After playback, Isaac Sim keeps the final G1 pose visible until you close the
-window. Add `--loop` to repeat the clip continuously.
+window. Add `--loop` to repeat the clip continuously. The synchronized Xsens
+skeleton appears beside the G1: left limbs are cyan, right limbs are orange,
+active foot contacts are green, and larger points identify retargeting sources.
+Use `--hide-xsens` to display only the G1 or `--xsens-offset-y` to change the
+separation.
 
 For a finite headless check:
 

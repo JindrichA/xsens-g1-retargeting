@@ -28,6 +28,8 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--mvnx", type=Path, default=DEFAULT_MVNX)
 parser.add_argument("--g1-urdf", type=Path, default=DEFAULT_G1_URDF)
 parser.add_argument("--headless", action="store_true")
+parser.add_argument("--hide-xsens", action="store_true", help="Hide the synchronized Xsens skeleton")
+parser.add_argument("--xsens-offset-y", type=float, default=1.5, help="Xsens skeleton lateral display offset in meters")
 parser.add_argument("--max-frames", type=int, default=0, help="Stop after this many 50 Hz frames; 0 plays the clip")
 parser.add_argument("--loop", action="store_true", help="Loop until the Isaac window closes")
 parser.add_argument("--scale", type=float, default=0.75, help="Human displacement to G1 displacement scale")
@@ -75,12 +77,13 @@ import numpy as np
 import pinocchio as pin
 import pink
 from pink.tasks import FrameTask, PostureTask
-from pxr import Usd, UsdGeom
+from pxr import Gf, Usd, UsdGeom, Vt
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from retargeting.mvnx import MvnxFrame, iter_frames, read_metadata
+from retargeting.xsens_skeleton import IK_SOURCE_SEGMENTS, display_positions, edge_indices
 
 
 OUTPUT_RATE = 50
@@ -92,6 +95,10 @@ TASK_SEGMENTS = {
     "left_ankle_roll_link": "LeftFoot",
     "right_ankle_roll_link": "RightFoot",
 }
+LEFT_COLOR = (0.1, 0.7, 1.0, 1.0)
+RIGHT_COLOR = (1.0, 0.45, 0.1, 1.0)
+CENTER_COLOR = (0.85, 0.85, 0.85, 1.0)
+CONTACT_COLOR = (0.2, 1.0, 0.25, 1.0)
 
 
 def ensure_g1_usd(urdf_path: Path) -> Path:
@@ -140,6 +147,80 @@ def resample(path: Path) -> tuple[object, list[MvnxFrame]]:
     if not output:
         raise RuntimeError(f"no motion frames in {path}")
     return metadata, output
+
+
+class XsensSkeletonDisplay:
+    def __init__(self, metadata: object, initial_frame: MvnxFrame, offset_y: float):
+        self.segment_names = metadata.segment_names
+        self.segment_index = {name: index for index, name in enumerate(self.segment_names)}
+        self.edges = edge_indices(self.segment_names)
+        self.contact_index = {name: index for index, name in enumerate(metadata.contact_names)}
+        pelvis_index = self.segment_index["Pelvis"]
+        self.initial_pelvis_position = initial_frame.segment_positions[pelvis_index]
+        self.initial_pelvis_quaternion = initial_frame.segment_quaternions[pelvis_index]
+        # Offset partly along -X so the human and G1 remain at similar camera depth.
+        self.display_origin = (-2.0 * offset_y / 3.0, offset_y, self.initial_pelvis_position[2])
+
+        stage = omni.usd.get_context().get_stage()
+        self.lines = UsdGeom.BasisCurves.Define(stage, "/World/XsensSkeleton/Segments")
+        self.lines.CreateTypeAttr(UsdGeom.Tokens.linear)
+        self.lines.CreateCurveVertexCountsAttr(Vt.IntArray([2] * len(self.edges)))
+        self.lines.CreateWidthsAttr(Vt.FloatArray([0.018] * (2 * len(self.edges))))
+        self.lines.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+        line_colors = [
+            self._color(self.segment_names[child])[:3]
+            for _, child in self.edges
+            for _ in range(2)
+        ]
+        line_colors_primvar = self.lines.GetDisplayColorPrimvar()
+        line_colors_primvar.Set(Vt.Vec3fArray([Gf.Vec3f(*color) for color in line_colors]))
+        line_colors_primvar.SetInterpolation(UsdGeom.Tokens.vertex)
+
+        self.points = UsdGeom.Points.Define(stage, "/World/XsensSkeleton/Joints")
+        self.points.CreateWidthsAttr(
+            Vt.FloatArray([0.075 if name in IK_SOURCE_SEGMENTS else 0.045 for name in self.segment_names])
+        )
+        self.points.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+        self.point_colors_primvar = self.points.GetDisplayColorPrimvar()
+        self.point_colors_primvar.SetInterpolation(UsdGeom.Tokens.vertex)
+
+    @staticmethod
+    def _color(name: str) -> tuple[float, float, float, float]:
+        if name.startswith("Left"):
+            return LEFT_COLOR
+        if name.startswith("Right"):
+            return RIGHT_COLOR
+        return CENTER_COLOR
+
+    def _foot_in_contact(self, frame: MvnxFrame, side: str) -> bool:
+        indexes = [
+            index
+            for name, index in self.contact_index.items()
+            if name.startswith(f"{side}Foot_")
+        ]
+        return any(frame.foot_contacts[index] for index in indexes)
+
+    def update(self, frame: MvnxFrame) -> None:
+        points = display_positions(
+            frame.segment_positions,
+            self.initial_pelvis_position,
+            self.initial_pelvis_quaternion,
+            self.display_origin,
+        )
+        line_points = [points[index] for edge in self.edges for index in edge]
+        self.lines.GetPointsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*point) for point in line_points]))
+        self.points.GetPointsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*point) for point in points]))
+
+        left_contact = self._foot_in_contact(frame, "Left")
+        right_contact = self._foot_in_contact(frame, "Right")
+        point_colors = []
+        for name in self.segment_names:
+            contact = (left_contact and name in {"LeftFoot", "LeftToe"}) or (
+                right_contact and name in {"RightFoot", "RightToe"}
+            )
+            color = CONTACT_COLOR if contact else self._color(name)
+            point_colors.append(color[:3])
+        self.point_colors_primvar.Set(Vt.Vec3fArray([Gf.Vec3f(*color) for color in point_colors]))
 
 
 class G1Retargeter:
@@ -279,8 +360,17 @@ def main() -> int:
     stage_utils.add_reference_to_stage(usd_path=str(g1_usd), path="/World/G1")
     GroundPlane("/World/GroundPlane")
     DomeLight("/World/DomeLight").set_intensities(1000)
-    set_camera_view(eye=[2.5, 2.5, 1.6], target=[0.0, 0.0, 0.8], camera_prim_path="/OmniverseKit_Persp")
+    camera_target_x = 0.0 if args.hide_xsens else -args.xsens_offset_y / 3.0
+    camera_target_y = 0.0 if args.hide_xsens else args.xsens_offset_y / 2.0
+    set_camera_view(
+        eye=[camera_target_x + 3.2, camera_target_y + 2.75, 1.8],
+        target=[camera_target_x, camera_target_y, 0.85],
+        camera_prim_path="/OmniverseKit_Persp",
+    )
     g1 = Articulation("/World/G1")
+    xsens_display = None if args.hide_xsens else XsensSkeletonDisplay(metadata, frames[0], args.xsens_offset_y)
+    if xsens_display:
+        xsens_display.update(frames[0])
 
     app_utils.play()
     for _ in range(5):
@@ -297,6 +387,8 @@ def main() -> int:
         print("Playback mode: KINEMATIC (zero gravity; pose and velocities reset at 50 Hz)")
 
     retargeter = G1Retargeter(args.g1_urdf, metadata, frames[0], args.scale)
+    if xsens_display:
+        print("Xsens skeleton: visible beside G1 (left cyan, right orange, foot contact green)")
     isaac_indices = {name: index for index, name in enumerate(g1.dof_names)}
     missing_joints = sorted(set(retargeter.robot.controlled_joint_names) - isaac_indices.keys())
     if missing_joints:
@@ -319,6 +411,8 @@ def main() -> int:
                 previous_q = q
                 isaac_positions[controlled_indices] = q
                 root_position, root_orientation = retargeter.root_pose(frame)
+                if xsens_display:
+                    xsens_display.update(frame)
                 g1.set_dof_positions(isaac_positions.reshape(1, -1))
                 if not args.dynamic:
                     g1.set_dof_velocities(zero_dof_velocities)
@@ -332,8 +426,8 @@ def main() -> int:
                     # Referenced USD layers can author viewport state, so frame the
                     # robot only after its first world pose has been applied.
                     set_camera_view(
-                        eye=[2.5, 2.5, 1.6],
-                        target=[0.0, 0.0, 0.75],
+                        eye=[camera_target_x + 3.2, camera_target_y + 2.75, 1.8],
+                        target=[camera_target_x, camera_target_y, 0.85],
                         camera_prim_path="/OmniverseKit_Persp",
                     )
                 simulation_app.update()
