@@ -414,6 +414,16 @@ green feet for active Xsens contacts. Larger points mark the pelvis, torso,
 hands, and feet used as retargeting sources. Use `--hide-xsens` to hide the
 human or `--xsens-offset-y 2.0` to increase the space between the figures.
 
+Around the G1, diagnostic markers explain what inverse kinematics is doing:
+
+- Red point: desired G1 torso, wrist, or ankle location.
+- Green point: location the solved G1 pose actually reaches.
+- Yellow line: distance between desired and achieved locations.
+
+Short yellow lines mean good positional tracking. A long line means the target
+may be unreachable, incorrectly scaled, constrained by another task, or limited
+by joint speed. Use `--hide-diagnostics` when only the motion is needed.
+
 The terminal should print:
 
 ```text
@@ -445,6 +455,25 @@ To run a fast test without opening a window:
 ```bash
 ./run_isaac_g1_playback.sh --headless --max-frames 50 --no-realtime
 ```
+
+To save detailed diagnostics for later comparison:
+
+```bash
+./run_isaac_g1_playback.sh --headless --no-realtime \
+  --diagnostics-json outputs/bending-forward.json \
+  --diagnostics-csv outputs/bending-forward.csv
+```
+
+The terminal and JSON summary report, for each torso/wrist/ankle target:
+
+- RMS position error in centimeters: typical distance over the recording.
+- Maximum position error in centimeters: worst observed frame.
+- RMS and maximum orientation error in degrees.
+- Frames where the `4 rad/s` joint-speed limiter changed the IK result.
+- Frames and joint names within `0.05 rad` of a URDF joint limit.
+
+The CSV contains one row per 50 Hz output frame. Generated files under
+`outputs/` remain local and are not committed to Git.
 
 Do not use `--dynamic` expecting stable movement. It enables gravity without a
 balance controller and demonstrates why IK alone is insufficient.

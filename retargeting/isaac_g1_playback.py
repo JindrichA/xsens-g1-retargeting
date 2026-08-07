@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from pathlib import Path
 import sys
@@ -29,6 +30,7 @@ parser.add_argument("--mvnx", type=Path, default=DEFAULT_MVNX)
 parser.add_argument("--g1-urdf", type=Path, default=DEFAULT_G1_URDF)
 parser.add_argument("--headless", action="store_true")
 parser.add_argument("--hide-xsens", action="store_true", help="Hide the synchronized Xsens skeleton")
+parser.add_argument("--hide-diagnostics", action="store_true", help="Hide desired/achieved IK markers")
 parser.add_argument("--xsens-offset-y", type=float, default=1.5, help="Xsens skeleton lateral display offset in meters")
 parser.add_argument("--max-frames", type=int, default=0, help="Stop after this many 50 Hz frames; 0 plays the clip")
 parser.add_argument("--loop", action="store_true", help="Loop until the Isaac window closes")
@@ -36,7 +38,10 @@ parser.add_argument("--scale", type=float, default=0.75, help="Human displacemen
 parser.add_argument("--ik-steps", type=int, default=4, help="Pink solver iterations per output frame")
 parser.add_argument("--max-joint-speed", type=float, default=4.0, help="Retargeted joint speed limit in rad/s")
 parser.add_argument("--no-realtime", action="store_true", help="Do not pace playback to 50 Hz")
-parser.add_argument("--screenshot", type=Path, help="Capture the viewport after the first G1 pose")
+parser.add_argument("--screenshot", type=Path, help="Capture the viewport at --screenshot-frame")
+parser.add_argument("--screenshot-frame", type=int, default=0, help="Zero-based output frame to capture")
+parser.add_argument("--diagnostics-json", type=Path, help="Write per-frame diagnostics and summary as JSON")
+parser.add_argument("--diagnostics-csv", type=Path, help="Write per-frame diagnostics as CSV")
 parser.add_argument(
     "--dynamic",
     action="store_true",
@@ -52,6 +57,8 @@ if args.max_joint_speed <= 0:
     parser.error("--max-joint-speed must be positive")
 if args.max_frames < 0:
     parser.error("--max-frames cannot be negative")
+if args.screenshot_frame < 0:
+    parser.error("--screenshot-frame cannot be negative")
 
 simulation_app = SimulationApp({"headless": args.headless, "hide_ui": False})
 
@@ -82,6 +89,7 @@ from pxr import Gf, Usd, UsdGeom, Vt
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from retargeting.diagnostics import DiagnosticsRecorder, FrameDiagnostics
 from retargeting.mvnx import MvnxFrame, iter_frames, read_metadata
 from retargeting.xsens_skeleton import IK_SOURCE_SEGMENTS, display_positions, edge_indices
 
@@ -95,6 +103,14 @@ TASK_SEGMENTS = {
     "left_ankle_roll_link": "LeftFoot",
     "right_ankle_roll_link": "RightFoot",
 }
+TASK_LABELS = {
+    "torso_link": "torso",
+    "left_wrist_yaw_link": "left_wrist",
+    "right_wrist_yaw_link": "right_wrist",
+    "left_ankle_roll_link": "left_ankle",
+    "right_ankle_roll_link": "right_ankle",
+}
+NEAR_LIMIT_MARGIN = 0.05
 LEFT_COLOR = (0.1, 0.7, 1.0, 1.0)
 RIGHT_COLOR = (1.0, 0.45, 0.1, 1.0)
 CENTER_COLOR = (0.85, 0.85, 0.85, 1.0)
@@ -223,6 +239,58 @@ class XsensSkeletonDisplay:
         self.point_colors_primvar.Set(Vt.Vec3fArray([Gf.Vec3f(*color) for color in point_colors]))
 
 
+class RetargetingDiagnosticsDisplay:
+    def __init__(self, frame_names: tuple[str, ...]):
+        self.frame_names = frame_names
+        stage = omni.usd.get_context().get_stage()
+
+        self.targets = UsdGeom.Points.Define(stage, "/World/RetargetingDiagnostics/Targets")
+        self.targets.CreateWidthsAttr(Vt.FloatArray([0.055] * len(frame_names)))
+        self.targets.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+        target_colors = self.targets.GetDisplayColorPrimvar()
+        target_colors.Set(Vt.Vec3fArray([Gf.Vec3f(1.0, 0.1, 0.1)] * len(frame_names)))
+        target_colors.SetInterpolation(UsdGeom.Tokens.vertex)
+        self.targets.CreatePointsAttr(Vt.Vec3fArray([Gf.Vec3f(0.0)] * len(frame_names)))
+
+        self.achieved = UsdGeom.Points.Define(stage, "/World/RetargetingDiagnostics/Achieved")
+        self.achieved.CreateWidthsAttr(Vt.FloatArray([0.08] * len(frame_names)))
+        self.achieved.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+        achieved_colors = self.achieved.GetDisplayColorPrimvar()
+        achieved_colors.Set(Vt.Vec3fArray([Gf.Vec3f(0.1, 1.0, 0.1)] * len(frame_names)))
+        achieved_colors.SetInterpolation(UsdGeom.Tokens.vertex)
+        self.achieved.CreatePointsAttr(Vt.Vec3fArray([Gf.Vec3f(0.0)] * len(frame_names)))
+
+        self.errors = UsdGeom.BasisCurves.Define(stage, "/World/RetargetingDiagnostics/Errors")
+        self.errors.CreateTypeAttr(UsdGeom.Tokens.linear)
+        self.errors.CreateCurveVertexCountsAttr(Vt.IntArray([2] * len(frame_names)))
+        self.errors.CreateWidthsAttr(Vt.FloatArray([0.012] * (2 * len(frame_names))))
+        self.errors.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+        error_colors = self.errors.GetDisplayColorPrimvar()
+        error_colors.Set(Vt.Vec3fArray([Gf.Vec3f(1.0, 1.0, 0.1)] * (2 * len(frame_names))))
+        error_colors.SetInterpolation(UsdGeom.Tokens.vertex)
+        self.errors.CreatePointsAttr(Vt.Vec3fArray([Gf.Vec3f(0.0)] * (2 * len(frame_names))))
+
+    def update(
+        self,
+        targets: dict[str, pin.SE3],
+        achieved: dict[str, pin.SE3],
+        root_position: np.ndarray,
+        root_orientation: np.ndarray,
+    ) -> None:
+        root_rotation = quaternion_matrix(tuple(root_orientation))
+
+        def world_position(transform: pin.SE3) -> tuple[float, float, float]:
+            position = root_position + root_rotation @ transform.translation
+            return tuple(float(value) for value in position)
+
+        target_points = [world_position(targets[name]) for name in self.frame_names]
+        achieved_points = [world_position(achieved[name]) for name in self.frame_names]
+        error_points = [point for pair in zip(target_points, achieved_points) for point in pair]
+        self.targets.GetPointsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*point) for point in target_points]))
+        self.achieved.GetPointsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*point) for point in achieved_points]))
+        self.errors.GetPointsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*point) for point in error_points]))
+
+
 class G1Retargeter:
     def __init__(self, urdf_path: Path, metadata: object, initial_frame: MvnxFrame, scale: float):
         self.robot = load_pink_robot(urdf_path=urdf_path)
@@ -252,6 +320,12 @@ class G1Retargeter:
         self.robot.q0 = q0.copy()
         self.configuration = pink.Configuration(self.model, self.robot.data, q0)
         self.last_output_q = q0.copy()
+        self.controlled_joint_indices = []
+        for name in self.robot.controlled_joint_names:
+            joint = self.model.joints[self.model.getJointId(name)]
+            if joint.nq != 1:
+                raise RuntimeError(f"controlled joint {name} has unsupported configuration size {joint.nq}")
+            self.controlled_joint_indices.append((name, joint.idx_q))
 
         self.tasks: dict[str, FrameTask] = {}
         for frame_name in TASK_SEGMENTS:
@@ -299,7 +373,10 @@ class G1Retargeter:
         world_rotation = rotation @ self.initial_pelvis_rotation.T
         return world_position, matrix_quaternion(world_rotation)
 
-    def solve(self, frame: MvnxFrame, iterations: int, max_joint_speed: float) -> np.ndarray:
+    def solve(
+        self, frame: MvnxFrame, iterations: int, max_joint_speed: float
+    ) -> tuple[np.ndarray, FrameDiagnostics, dict[str, pin.SE3], dict[str, pin.SE3]]:
+        targets: dict[str, pin.SE3] = {}
         for robot_frame, human_segment in TASK_SEGMENTS.items():
             current = self._human_relative(frame, human_segment)
             human_initial = self.initial_human_relative[robot_frame]
@@ -308,7 +385,9 @@ class G1Retargeter:
             target_translation = robot_initial.translation + self.scale * (
                 current.translation - human_initial.translation
             )
-            self.tasks[robot_frame].set_target(pin.SE3(target_rotation, target_translation))
+            target = pin.SE3(target_rotation, target_translation)
+            targets[robot_frame] = target
+            self.tasks[robot_frame].set_target(target)
 
         all_tasks = [*self.tasks.values(), self.posture]
         for _ in range(iterations):
@@ -329,15 +408,72 @@ class G1Retargeter:
         if not np.isfinite(self.configuration.q).all():
             raise RuntimeError(f"IK produced non-finite values at source frame {frame.index}")
         max_step = max_joint_speed / OUTPUT_RATE
+        requested_step = self.configuration.q - self.last_output_q
+        rate_limited = tuple(
+            name
+            for name, index in self.controlled_joint_indices
+            if abs(requested_step[index]) > max_step + 1e-9
+        )
         output_q = self.last_output_q + np.clip(
-            self.configuration.q - self.last_output_q,
+            requested_step,
             -max_step,
             max_step,
         )
         self.configuration.q = output_q.copy()
         self.configuration.update()
         self.last_output_q = output_q.copy()
-        return output_q
+        near_limit = []
+        for name, index in self.controlled_joint_indices:
+            margin = min(
+                output_q[index] - self.model.lowerPositionLimit[index],
+                self.model.upperPositionLimit[index] - output_q[index],
+            )
+            if math.isfinite(float(margin)) and margin <= NEAR_LIMIT_MARGIN:
+                near_limit.append(name)
+
+        achieved = {
+            robot_frame: self.configuration.get_transform_frame_to_world(robot_frame)
+            for robot_frame in TASK_SEGMENTS
+        }
+        position_errors = {}
+        orientation_errors = {}
+        for robot_frame in TASK_SEGMENTS:
+            label = TASK_LABELS[robot_frame]
+            position_errors[label] = float(np.linalg.norm(achieved[robot_frame].translation - targets[robot_frame].translation))
+            rotation_error = targets[robot_frame].rotation.T @ achieved[robot_frame].rotation
+            orientation_errors[label] = float(np.linalg.norm(pin.log3(rotation_error)))
+        diagnostics = FrameDiagnostics(
+            source_frame=frame.index,
+            time_seconds=frame.time_seconds,
+            position_errors_m=position_errors,
+            orientation_errors_rad=orientation_errors,
+            rate_limited_joints=rate_limited,
+            near_limit_joints=tuple(near_limit),
+        )
+        return output_q, diagnostics, targets, achieved
+
+
+def print_diagnostics_summary(recorder: DiagnosticsRecorder) -> None:
+    summary = recorder.summary()
+    print("IK tracking diagnostics (after joint-speed limiting):")
+    for name in recorder.task_names:
+        task = summary["tasks"][name]
+        print(
+            f"  {name}: position RMS {task['rms_position_cm']:.2f} cm, "
+            f"max {task['max_position_cm']:.2f} cm; orientation RMS "
+            f"{task['rms_orientation_deg']:.1f} deg, max {task['max_orientation_deg']:.1f} deg"
+        )
+    print(
+        f"  constraints: rate-limited in {summary['rate_limited_frame_count']}/{summary['frame_count']} frames; "
+        f"near a joint limit in {summary['near_limit_frame_count']}/{summary['frame_count']} frames"
+    )
+    for title, key in (
+        ("most rate-limited", "rate_limited_joint_counts"),
+        ("most near-limit", "near_limit_joint_counts"),
+    ):
+        counts = sorted(summary[key].items(), key=lambda item: (-item[1], item[0]))[:5]
+        if counts:
+            print(f"  {title}: {', '.join(f'{name} ({count})' for name, count in counts)}")
 
 
 def main() -> int:
@@ -368,9 +504,12 @@ def main() -> int:
         camera_prim_path="/OmniverseKit_Persp",
     )
     g1 = Articulation("/World/G1")
+    retargeter = G1Retargeter(args.g1_urdf, metadata, frames[0], args.scale)
+    recorder = DiagnosticsRecorder(tuple(TASK_LABELS.values()))
     xsens_display = None if args.hide_xsens else XsensSkeletonDisplay(metadata, frames[0], args.xsens_offset_y)
     if xsens_display:
         xsens_display.update(frames[0])
+    diagnostics_display = None if args.hide_diagnostics else RetargetingDiagnosticsDisplay(tuple(TASK_SEGMENTS))
 
     app_utils.play()
     for _ in range(5):
@@ -386,9 +525,10 @@ def main() -> int:
             physics_scene.set_gravity((0.0, 0.0, 0.0))
         print("Playback mode: KINEMATIC (zero gravity; pose and velocities reset at 50 Hz)")
 
-    retargeter = G1Retargeter(args.g1_urdf, metadata, frames[0], args.scale)
     if xsens_display:
         print("Xsens skeleton: visible beside G1 (left cyan, right orange, foot contact green)")
+    if diagnostics_display:
+        print("IK diagnostics: desired targets red, achieved frames green, position error lines yellow")
     isaac_indices = {name: index for index, name in enumerate(g1.dof_names)}
     missing_joints = sorted(set(retargeter.robot.controlled_joint_names) - isaac_indices.keys())
     if missing_joints:
@@ -405,7 +545,9 @@ def main() -> int:
         while simulation_app.is_running():
             for frame in frames:
                 started = time.monotonic()
-                q = retargeter.solve(frame, args.ik_steps, args.max_joint_speed)
+                q, diagnostics, targets, achieved = retargeter.solve(frame, args.ik_steps, args.max_joint_speed)
+                if played < len(frames):
+                    recorder.add(diagnostics)
                 if previous_q is not None:
                     maximum_joint_step = max(maximum_joint_step, float(np.max(np.abs(q - previous_q))))
                 previous_q = q
@@ -413,6 +555,8 @@ def main() -> int:
                 root_position, root_orientation = retargeter.root_pose(frame)
                 if xsens_display:
                     xsens_display.update(frame)
+                if diagnostics_display:
+                    diagnostics_display.update(targets, achieved, root_position, root_orientation)
                 g1.set_dof_positions(isaac_positions.reshape(1, -1))
                 if not args.dynamic:
                     g1.set_dof_velocities(zero_dof_velocities)
@@ -447,14 +591,14 @@ def main() -> int:
                         f"Stage meters-per-unit: {UsdGeom.GetStageMetersPerUnit(stage)}; "
                         f"camera position: {camera_position}"
                     )
-                    if args.screenshot:
-                        screenshot = args.screenshot.expanduser().resolve()
-                        screenshot.parent.mkdir(parents=True, exist_ok=True)
-                        capture_viewport_to_file(get_active_viewport(), file_path=str(screenshot))
-                        for _ in range(30):
-                            simulation_app.update()
-                        omni.kit.renderer_capture.acquire_renderer_capture_interface().wait_async_capture()
-                        print(f"Captured viewport: {screenshot}")
+                if args.screenshot and played == args.screenshot_frame:
+                    screenshot = args.screenshot.expanduser().resolve()
+                    screenshot.parent.mkdir(parents=True, exist_ok=True)
+                    capture_viewport_to_file(get_active_viewport(), file_path=str(screenshot))
+                    for _ in range(30):
+                        simulation_app.update()
+                    omni.kit.renderer_capture.acquire_renderer_capture_interface().wait_async_capture()
+                    print(f"Captured viewport: {screenshot}")
                 played += 1
                 if not args.no_realtime:
                     remaining = 1.0 / OUTPUT_RATE - (time.monotonic() - started)
@@ -472,9 +616,17 @@ def main() -> int:
                     time.sleep(0.02)
                 break
     finally:
-        print(f"Played {played} frames; maximum IK joint step: {maximum_joint_step:.4f} rad")
-        app_utils.stop()
-        simulation_app.close()
+        try:
+            print(f"Played {played} frames; maximum IK joint step: {maximum_joint_step:.4f} rad")
+            if recorder.frames:
+                print_diagnostics_summary(recorder)
+                if args.diagnostics_json:
+                    print(f"Wrote diagnostics JSON: {recorder.write_json(args.diagnostics_json)}")
+                if args.diagnostics_csv:
+                    print(f"Wrote diagnostics CSV: {recorder.write_csv(args.diagnostics_csv)}")
+        finally:
+            app_utils.stop()
+            simulation_app.close()
 
     return 0
 

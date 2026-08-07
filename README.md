@@ -57,6 +57,23 @@ active foot contacts are green, and larger points identify retargeting sources.
 Use `--hide-xsens` to display only the G1 or `--xsens-offset-y` to change the
 separation.
 
+The G1 also shows IK diagnostics: red points are desired torso/wrist/ankle
+targets, green points are the achieved G1 frames, and yellow lines show position
+error. Use `--hide-diagnostics` to hide them. Playback prints RMS and maximum
+position/orientation error plus joint-speed and joint-limit warnings.
+
+Write machine-readable reports for comparing retargeting changes:
+
+```bash
+./run_isaac_g1_playback.sh --headless --no-realtime \
+  --diagnostics-json outputs/bending-forward.json \
+  --diagnostics-csv outputs/bending-forward.csv
+```
+
+Reports contain errors after joint-speed limiting, so they describe the exact
+configuration sent to Isaac. The ignored `outputs/` directory is intended for
+local generated reports.
+
 For a finite headless check:
 
 ```bash
