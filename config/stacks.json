@@ -1,0 +1,91 @@
+{
+  "stacks": {
+    "xsens-g1-mujoco": {
+      "description": "Working Xsens hand gestures to G1 locomotion in MuJoCo (not full-body retargeting)",
+      "session": "retarget-xsens-g1",
+      "requirements": {
+        "executables": ["bash"],
+        "paths": [
+          "/opt/ros/jazzy/setup.bash",
+          "{projects}/xsens_mvn_ros2/install/setup.bash",
+          "{projects}/xsens_mvn_ros2/xsens_hand_cmd_bridge.py",
+          "{projects}/xsens_mvn_ros2/unitree_rl_gym_xsens_hands.py",
+          "{home}/miniforge3/etc/profile.d/conda.sh",
+          "{projects}/unitree_rl_gym/deploy/pre_train/g1/motion.pt"
+        ]
+      },
+      "components": [
+        {
+          "name": "xsens",
+          "cwd": "{projects}/xsens_mvn_ros2",
+          "command": "source /opt/ros/jazzy/setup.bash && source install/setup.bash && ros2 launch xsens_mvn_ros2 xsens_stream.launch.py"
+        },
+        {
+          "name": "bridge",
+          "cwd": "{projects}/xsens_mvn_ros2",
+          "delay": 2,
+          "command": "source /opt/ros/jazzy/setup.bash && source install/setup.bash && python3 xsens_hand_cmd_bridge.py"
+        },
+        {
+          "name": "mujoco",
+          "cwd": "{projects}/xsens_mvn_ros2",
+          "delay": 1,
+          "command": "source {home}/miniforge3/etc/profile.d/conda.sh && conda activate tv && python unitree_rl_gym_xsens_hands.py"
+        }
+      ]
+    },
+    "xsens-h1-isaac": {
+      "description": "Working Xsens locomotion intent to Isaac Sim H1 policy (not full-body retargeting)",
+      "session": "retarget-xsens-h1",
+      "requirements": {
+        "executables": ["bash"],
+        "paths": [
+          "/opt/ros/jazzy/setup.bash",
+          "{projects}/xsens_mvn_ros2/install/setup.bash",
+          "{projects}/xsens_mvn_ros2/run_isaacsim_h1_xsens.sh",
+          "{home}/isaacsim/python.sh"
+        ]
+      },
+      "components": [
+        {
+          "name": "xsens",
+          "cwd": "{projects}/xsens_mvn_ros2",
+          "command": "source /opt/ros/jazzy/setup.bash && source install/setup.bash && ros2 launch xsens_mvn_ros2 xsens_stream.launch.py"
+        },
+        {
+          "name": "isaac-h1",
+          "cwd": "{projects}/xsens_mvn_ros2",
+          "delay": 2,
+          "command": "./run_isaacsim_h1_xsens.sh --debug"
+        }
+      ]
+    },
+    "sonic-g1-mujoco": {
+      "description": "GR00T SONIC G1 controller with its MuJoCo simulator (baseline without Xsens)",
+      "session": "retarget-sonic-g1",
+      "requirements": {
+        "executables": ["bash"],
+        "paths": [
+          "{projects}/GR00T-WholeBodyControl/.venv_sim/bin/activate",
+          "{projects}/GR00T-WholeBodyControl/gear_sonic/scripts/run_sim_loop.py",
+          "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/deploy.sh",
+          "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model",
+          "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx"
+        ]
+      },
+      "components": [
+        {
+          "name": "mujoco",
+          "cwd": "{projects}/GR00T-WholeBodyControl",
+          "command": "source .venv_sim/bin/activate && python gear_sonic/scripts/run_sim_loop.py"
+        },
+        {
+          "name": "sonic",
+          "cwd": "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy",
+          "delay": 2,
+          "command": "bash deploy.sh sim"
+        }
+      ]
+    }
+  }
+}
