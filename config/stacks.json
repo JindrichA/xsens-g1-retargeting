@@ -61,16 +61,22 @@
       ]
     },
     "sonic-g1-mujoco": {
-      "description": "GR00T SONIC G1 controller with its MuJoCo simulator (baseline without Xsens)",
+      "description": "GR00T SONIC G1 streaming controller with its MuJoCo simulator (publisher started separately)",
       "session": "retarget-sonic-g1",
       "requirements": {
         "executables": ["bash"],
         "paths": [
           "{projects}/GR00T-WholeBodyControl/.venv_sim/bin/activate",
           "{projects}/GR00T-WholeBodyControl/gear_sonic/scripts/run_sim_loop.py",
-          "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/deploy.sh",
-          "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model",
-          "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx"
+          "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/target/release/g1_deploy_onnx_ref",
+          "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx",
+          "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx",
+          "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/observation_config.yaml",
+          "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx",
+          "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/reference/example",
+          "{projects}/TensorRT-10.13.3.9/lib/libnvinfer.so.10.13.3",
+          "{projects}/onnxruntime-linux-x64-1.16.3/lib/libonnxruntime.so.1.16.3",
+          "{projects}/sonic-build-deps/lib/libzmq.so.5"
         ]
       },
       "components": [
@@ -83,7 +89,7 @@
           "name": "sonic",
           "cwd": "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy",
           "delay": 2,
-          "command": "bash deploy.sh sim"
+          "command": "export TensorRT_ROOT={projects}/TensorRT-10.13.3.9 && export onnxruntime_ROOT={projects}/onnxruntime-linux-x64-1.16.3 && export LD_LIBRARY_PATH={projects}/TensorRT-10.13.3.9/lib:{projects}/onnxruntime-linux-x64-1.16.3/lib:{projects}/sonic-build-deps/lib:$LD_LIBRARY_PATH && ./target/release/g1_deploy_onnx_ref lo policy/release/model_decoder.onnx reference/example --obs-config policy/release/observation_config.yaml --encoder-file policy/release/model_encoder.onnx --planner-file planner/target_vel/V2/planner_sonic.onnx --input-type zmq --output-type all --zmq-host localhost --disable-crc-check"
         }
       ]
     }

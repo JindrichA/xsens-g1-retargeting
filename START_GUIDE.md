@@ -40,14 +40,14 @@ This is **kinematic visualization**. The program places the simulated robot into
 the calculated poses. Gravity is disabled so we can inspect retargeting without
 the robot falling.
 
-The following path does not work yet:
+The dynamic recorded-motion path now runs, but is not stable yet:
 
 ```text
-Live Xsens suit -> balanced G1 under gravity -> real Unitree G1
+Recorded Xsens -> SONIC -> G1 under gravity (first test completed with one fall)
 ```
 
-The missing major stages are dynamic motion tracking with a balancing policy,
-live input conversion, runtime safety, and hardware validation.
+The missing major stages are dynamically stable retargeting, quantitative
+dynamic metrics, live input conversion, runtime safety, and hardware validation.
 
 ## 2. Important Concepts
 
@@ -264,8 +264,8 @@ Pink also applies posture regularization and the joint limits from the G1 URDF.
 
 Purpose: another physics simulator widely used for robot control research.
 
-Several sibling projects use MuJoCo. It is likely to be the first dynamic test
-environment for the SONIC controller. Isaac Sim remains useful for visualization
+Several sibling projects use MuJoCo. It is the current dynamic test environment
+for the SONIC controller. Isaac Sim remains useful for kinematic visualization
 and may also support later dynamic experiments.
 
 ### GR00T SONIC
@@ -282,9 +282,10 @@ The SONIC source repository exists at:
 ../GR00T-WholeBodyControl
 ```
 
-Its complete runnable simulation environment and policy assets are not
-currently available at the expected paths. SONIC is therefore a planned next
-stage, not part of the current Isaac playback command.
+Its MuJoCo environment, released policy assets, TensorRT runtime, and compiled
+controller are installed locally. The first 28.62-second pouring-water reference
+completed through SONIC, with one MuJoCo fall/reset. SONIC is still separate
+from the Isaac playback command and remains simulation-only.
 
 ### Unitree SDK2
 
@@ -611,6 +612,27 @@ frame_index [N]      monotonically increasing frame numbers
 
 The target rate is 50 Hz.
 
+The current SONIC wire format places a `pose` topic prefix before a 1280-byte
+JSON header and packed binary fields. The project publisher creates this exact
+message from an exported `sonic_reference` directory. This ignored output must
+first be generated from the approved local MVNX dataset:
+
+```bash
+.conda-sonic-stream/bin/python -m retargeting.sonic_stream \
+  outputs/xsens-g1-batch/pouring-water/sonic_reference --dry-run
+```
+
+Create that small, isolated publisher environment once with the installed
+Miniforge:
+
+```bash
+~/miniforge3/bin/conda create -p .conda-sonic-stream python=3.12 pyzmq -y
+```
+
+SONIC's `--input-type zmq` mode is used because it tracks streamed G1 references
+directly. The `zmq_manager` mode adds planner and mode-switching behavior that is
+not needed for the first offline dynamic test.
+
 The intended dynamic path is:
 
 ```text
@@ -687,28 +709,31 @@ learning order is:
 
 ## 13. Recommended Next Development Step
 
-The next useful feature is a synchronized comparison viewer containing:
+The synchronized Xsens/G1 viewer, IK diagnostics, batch export, and first SONIC
+dynamic playback are complete. The next useful feature is dynamic telemetry
+containing:
 
-- The original Xsens human skeleton.
-- The retargeted G1 beside it.
-- Wrist, torso, pelvis, and foot targets.
-- Pause, restart, speed, and frame-step controls.
-- Tracking-error and joint-limit diagnostics.
-- Xsens heel/toe contact visualization.
+- Root height and roll/pitch.
+- Fall time and reset count.
+- Desired-versus-observed G1 joint tracking error.
+- Foot contact and slip.
+- Torque and action saturation.
+- A machine-readable summary for every recording.
 
-This is more valuable than immediately connecting a live suit because it lets
-us determine whether the retargeting is actually correct.
+This is more valuable than immediately connecting a live suit because the first
+upright SONIC test already fell once. We need to distinguish reference problems
+from controller limits before adding network timing and live calibration.
 
 After that, the sequence should be:
 
 1. Improve body scaling and contact-aware retargeting.
 2. Export validated 29-joint trajectories at 50 Hz.
-3. Restore and verify the SONIC runtime and policy assets.
-4. Test gravity-enabled tracking in simulation.
-5. Add the live ROS 2 Xsens adapter.
+3. Add dynamic tracking telemetry and define simulation acceptance criteria.
+4. Improve the references until restricted upright clips track without falls.
+5. Add the live ROS 2 Xsens adapter described in `docs/live_xsens.md`.
 6. Add live watchdog and operator controls.
-7. Define simulation acceptance criteria.
-8. Consider restricted real-robot tests.
+7. Validate delayed, frozen, dropped, and discontinuous live input.
+8. Consider restricted real-robot tests only after simulation acceptance.
 
 ## 14. Common Questions
 
@@ -730,8 +755,8 @@ safety remain separate validation stages.
 
 ### Why use 50 Hz when Xsens records at 240 Hz?
 
-The planned SONIC reference and control loop use 50 Hz. Resampling early makes
-offline output match the eventual controller contract.
+The SONIC reference and control loop use 50 Hz. Resampling early makes offline
+output match the controller contract.
 
 ### Why use joint names instead of array indexes?
 
@@ -756,6 +781,8 @@ operator controls, and simulation acceptance criteria.
 - `README.md`: concise commands and current project status.
 - `docs/architecture.md`: technical architecture and interface contracts.
 - `docs/collaboration.md`: clone layout, local data, and contribution workflow.
+- `docs/sonic_simulation.md`: reproducible SONIC setup and recorded playback.
+- `docs/live_xsens.md`: live MVN/ROS contract and planned safe adapter workflow.
 - `AGENTS.md`: project development and safety rules.
 - `Documentation/navod_Xsens_ROS2_Unitree_G1_retargeting.pdf`: supplied Czech
   technical guide.

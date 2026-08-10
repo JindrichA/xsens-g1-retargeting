@@ -9,7 +9,7 @@ models, and sibling upstream projects are deliberately kept outside Git.
 ```text
 .
 |-- config/                     Experiment stack definitions
-|-- docs/                       Architecture and collaboration documentation
+|-- docs/                       Architecture, setup, and operator documentation
 |-- Documentation/              Supplied lightweight PDF references
 |-- retargeting/                MVNX parser and G1 retargeting implementation
 |-- tests/                      Unit tests that need no simulator or ROS
@@ -21,9 +21,10 @@ models, and sibling upstream projects are deliberately kept outside Git.
 `-- START_GUIDE.md              Beginner guide
 ```
 
-The repository currently has no normal Python package dependencies. The MVNX
-tools and tests use the Python standard library. Isaac-specific dependencies
-come from Isaac Sim's bundled Python environment.
+The MVNX tools and tests use the Python standard library. Isaac-specific
+dependencies come from Isaac Sim's bundled Python environment. The optional
+SONIC protocol publisher uses only `pyzmq`, declared in
+`requirements-sonic-stream.txt` and isolated from ROS, Isaac, and SONIC.
 
 ## Clone Layout
 
@@ -37,7 +38,10 @@ The default layout expects related upstream repositories to be siblings:
 |-- unitree_mujoco/
 |-- unitree_sdk2_python/
 |-- xr_teleoperate/
-`-- GR00T-WholeBodyControl/
+|-- GR00T-WholeBodyControl/
+|-- TensorRT-10.13.3.9/
+|-- onnxruntime-linux-x64-1.16.3/
+`-- sonic-build-deps/
 ```
 
 If the sibling projects are elsewhere, set:
@@ -119,6 +123,9 @@ Validate an approved recording before using it:
 python3 motionctl.py validate /path/to/recordings
 ```
 
+See [`sonic_simulation.md`](sonic_simulation.md) for the external model/runtime
+setup and [`live_xsens.md`](live_xsens.md) for the live ROS contract.
+
 ## Contribution Rules
 
 - Keep simulation as the default; never make hardware execution automatic.
@@ -133,11 +140,12 @@ python3 motionctl.py validate /path/to/recordings
 
 ## Publishing
 
-Before pushing to a shared remote:
+Before pushing to the established private remote:
 
-1. Choose the organization and repository visibility.
-2. Choose a software license with the project owner.
-3. Confirm the supplied PDFs may be redistributed.
-4. Review `git status` and the complete initial commit.
-5. Verify the ignored 5 GB dataset is not tracked.
-6. Add the remote and push only after those decisions are recorded.
+1. Review `git status`, `git diff`, and recent history.
+2. Run the dependency-free unit test suite.
+3. Verify the ignored recordings, generated outputs, environments, models, and
+   external dependencies are not staged.
+4. Confirm any newly added documents or data are approved for redistribution.
+5. Commit only the intended source and documentation changes.
+6. Push without bypassing hooks or force-updating shared history.

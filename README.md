@@ -6,6 +6,11 @@ trackable Unitree G1 references.
 New to robotics or these tools? Start with [`START_GUIDE.md`](START_GUIDE.md).
 For cloning, data placement, and contribution rules, see
 [`docs/collaboration.md`](docs/collaboration.md).
+The evaluated dynamic-controller options and SONIC selection are recorded in
+[`docs/controller_selection.md`](docs/controller_selection.md).
+For reproducible dynamic playback, see
+[`docs/sonic_simulation.md`](docs/sonic_simulation.md). For the measured live
+ROS interface and planned adapter, see [`docs/live_xsens.md`](docs/live_xsens.md).
 
 The immediate development path is recorded Xsens MVNX to G1 retargeting to
 SONIC MuJoCo. Live ROS 2 input will then replace file playback without changing
@@ -30,8 +35,8 @@ python3 motionctl.py validate "xsens_TJ_08072026/MVNX export"
 loaded into memory. It validates frame continuity, dimensions, finite values,
 quaternion norms, contacts, and known source timestamp irregularities.
 
-See `docs/architecture.md` for the measured input contract and target SONIC
-Protocol v1 output.
+See `docs/architecture.md` for the measured input contract and SONIC Protocol
+v1 output.
 
 ## Isaac Sim G1 Playback
 
@@ -119,8 +124,8 @@ launches reuse that correctly scaled visual asset.
 Kinematic playback is the safe default: gravity is zero, root and joint
 velocities are reset each frame, and physics pauses on the final pose. The
 explicit `--dynamic` option restores gravity without a balancing controller and
-is expected to fall; it exists only to demonstrate the difference until SONIC
-is integrated.
+is expected to fall; it exists only to demonstrate the difference between IK
+and controlled dynamic simulation.
 
 ## Existing Demos
 
@@ -154,10 +159,36 @@ python3 retargetctl.py start sonic-g1-mujoco --dry-run
 
 If sibling repositories are stored elsewhere, set `RETARGET_PROJECTS_ROOT`.
 
-The SONIC source, reference motions, and configuration are present, but its
-simulation virtual environment, compiled deployment binary, policy model, and
-planner model are not currently present in that checkout. The checker reports
-these separately rather than treating source checkout as a runnable install.
+The local SONIC simulation environment, release policy, planner, TensorRT
+10.13.3, ONNX Runtime 1.16.3, and controller binary are installed. Build-only
+C++ dependencies are isolated under `~/Projects/sonic-build-deps`; ROS 2 is not
+enabled in the SONIC controller. The stack launches the verified binary directly
+instead of rebuilding through upstream `deploy.sh` on every run.
+
+Once `python3 retargetctl.py check sonic-g1-mujoco` reports ready, run the
+gravity-enabled test in two terminals:
+
+```bash
+# One-time local publisher environment (separate from SONIC and ROS)
+~/miniforge3/bin/conda create -p .conda-sonic-stream python=3.12 pyzmq -y
+
+# Terminal 1: SONIC MuJoCo simulation and controller
+PATH="$HOME/Projects/sonic-build-deps/bin:$PATH" \
+  python3 retargetctl.py start sonic-g1-mujoco --backend tmux --attach
+
+# Terminal 2: validate first, then publish the exported clip
+# (outputs are generated locally from the ignored approved MVNX dataset)
+.conda-sonic-stream/bin/python -m retargeting.sonic_stream \
+  outputs/xsens-g1-batch/pouring-water/sonic_reference --dry-run
+.conda-sonic-stream/bin/python -m retargeting.sonic_stream \
+  outputs/xsens-g1-batch/pouring-water/sonic_reference
+```
+
+In the SONIC controller pane, press `]` to start control and `ENTER` to enable
+ZMQ streaming before publishing. In the MuJoCo window, press `9` to release the
+elastic support. Press `O` to stop. The publisher only binds a local ZMQ source;
+it has no Unitree hardware output path. The first complete `Pouring water` test
+was accepted end to end but fell once; see [`docs/baseline.md`](docs/baseline.md).
 
 ## Available Stacks
 
@@ -165,7 +196,7 @@ these separately rather than treating source checkout as a runnable install.
 | --- | --- | --- | --- |
 | `xsens-g1-mujoco` | Xsens ROS `/link_states` | Unitree RL G1 in MuJoCo | Existing hand-to-velocity demo |
 | `xsens-h1-isaac` | Xsens ROS `/link_states` | Isaac Sim H1 policy | Existing locomotion-intent demo |
-| `sonic-g1-mujoco` | SONIC default input | SONIC G1 in MuJoCo | Whole-body controller baseline, no Xsens |
+| `sonic-g1-mujoco` | Protocol v1 G1 reference | SONIC G1 in MuJoCo | Dynamic whole-body simulation; publisher separate |
 
 Stack definitions live in `config/stacks.json`. Each component gets its own
 environment setup, which avoids mixing ROS 2 Jazzy, Conda, Isaac Sim, and SONIC
@@ -181,8 +212,11 @@ Python dependencies.
 - `unitree_mujoco` is useful for controllers that already speak Unitree DDS.
 - `xr_teleoperate` contains reusable arm IK, hand retargeting, limits, and filters.
 - `GR00T-WholeBodyControl` SONIC is the best candidate for dynamically stable G1
-  whole-body tracking. Its `zmq_manager` motion-reference input is the likely
-  adapter boundary.
+  whole-body tracking. Its streaming-only `zmq` input accepts the current 29-DOF
+  references directly; `zmq_manager` is only needed for planner mode switching.
+- GMR now supports offline Xsens BVH and live Xsens MVN UDP for G1, making it the
+  strongest alternative retargeter. TWIST and TWIST2 provide G1 checkpoints,
+  but require separate Python 3.8, Isaac Gym, and Redis environments.
 - `xsens_TJ_08072026` contains 12 synchronized recordings in MVNX, BVH, and MVN,
   plus 11 XLSX exports: 141,386 frames and about 589 seconds at 240 Hz.
 - MVNX is X-forward/Y-left/Z-up with `wxyz` quaternions, matching SONIC. It also
@@ -195,14 +229,22 @@ Python dependencies.
 
 ## Integration Roadmap
 
-1. Record and inspect normalized Xsens segment poses from `/link_states`.
-2. Implement neutral calibration, coordinate conversion, stale-input handling,
-   smoothing, and G1 limits in this repository.
-3. Emit the motion-reference format consumed by SONIC's ZMQ manager input.
-4. Validate tracking and failure behavior with `sonic-g1-mujoco`.
-5. Add an explicit Xsens-to-SONIC simulation stack.
-6. Consider hardware only after simulation acceptance criteria and emergency-stop
-   behavior are documented and tested.
+1. Offline MVNX parsing, Pink IK, synchronized visualization, diagnostics, and
+   SONIC Protocol v1 export are implemented.
+2. The SONIC MuJoCo loop accepts and completes exported clips, but the first
+   upright baseline fell once.
+3. Add machine-readable dynamic telemetry and simulation acceptance criteria.
+4. Improve calibration, body scaling, foot contacts, and reference feasibility.
+5. Implement the ROS capture and live retargeting processes with a stale-input
+   watchdog.
+6. Validate restricted live input in simulation, including pause/resume and
+   network-failure injection.
+7. Consider hardware only after simulation acceptance criteria and emergency
+   procedures are documented and passed.
+
+The live adapter does not exist yet. Its complete measured input contract,
+process split, operator sequence, and safety checklist are documented in
+[`docs/live_xsens.md`](docs/live_xsens.md).
 
 The main protocol references are in the sibling SONIC repository:
 

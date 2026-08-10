@@ -5,6 +5,7 @@ __pycache__/
 .coverage
 htmlcov/
 .venv/
+.conda-sonic-stream/
 venv/
 
 # Local configuration and credentials

@@ -1,5 +1,33 @@
 # Retargeting Baseline
 
+## 2026-08-10: First SONIC Dynamic Playback
+
+Input: `outputs/xsens-g1-batch/pouring-water/sonic_reference`
+
+Configuration:
+
+- NVIDIA GEAR-SONIC default G1 release policy and encoder.
+- TensorRT 10.13.3, ONNX Runtime 1.16.3, MuJoCo 3.11.
+- SONIC joint-based ZMQ Protocol v1 at 50 Hz.
+- 1,432 frames, 28.62 seconds, `catch_up=false`.
+- MuJoCo gravity/contact simulation on loopback DDS only.
+- Elastic support released before streaming.
+
+Results:
+
+- SONIC decoded all five fields and accepted all 1,432 frames in IsaacLab joint
+  order.
+- Encoder and policy observation dimensions matched their released models.
+- The reference completed without protocol, stale-input, or inference errors.
+- Policy inference was normally about 68-141 microseconds per control step.
+- MuJoCo reported one fall at `0.199 m` root height and automatically reset the
+  robot.
+
+This proves the offline Xsens-to-Pink-to-SONIC transport and dynamic-control loop
+works end to end. It does not establish dynamic feasibility: even the easiest
+upright clip fell once, and tracking error, foot slip, torque saturation, and
+root tilt are not yet captured in a machine-readable report.
+
 ## 2026-08-07: Initial 12-Recording Export
 
 Command:
@@ -58,8 +86,9 @@ Large posture changes expose major limitations:
   locking is still required.
 - Long manipulation clips accumulate frequent speed limiting and wrist/hip
   limit pressure.
-- Successful export means the files satisfy the measured format and dimensions;
-  it does not mean SONIC can dynamically track them under gravity.
+- Successful export means the files satisfy the measured format and dimensions.
+  The first SONIC test accepted them but fell once on `Pouring water`, so export
+  remains insufficient evidence of dynamic feasibility.
 
 ## Next Comparison
 
@@ -68,4 +97,6 @@ The next baseline should use:
 1. Recording-aware neutral calibration.
 2. Separate torso, arm, and leg scales.
 3. Xsens heel/toe contact-based foot locking.
-4. The same twelve recordings and output metrics for a direct comparison.
+4. Dynamic metrics for root height/tilt, foot slip, tracking error, limits, and
+   torque saturation.
+5. The same twelve recordings and output metrics for a direct comparison.
