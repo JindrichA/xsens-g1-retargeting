@@ -96,7 +96,7 @@ def tmux(*args: str, capture: bool = False, check: bool = True) -> subprocess.Co
 
 
 def session_exists(session: str) -> bool:
-    return tmux("has-session", "-t", session, check=False).returncode == 0
+    return tmux("has-session", "-t", session, capture=True, check=False).returncode == 0
 
 
 def pane_command(component: dict[str, Any]) -> str:

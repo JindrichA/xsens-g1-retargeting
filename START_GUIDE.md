@@ -654,6 +654,25 @@ G1 simulation with gravity and contacts
 SONIC does not replace retargeting. Retargeting produces robot-compatible
 reference motion; SONIC attempts to track that motion dynamically.
 
+The deployed encoder, decoder, and planner are NVIDIA's externally pretrained
+Unitree G1 models from `https://huggingface.co/nvidia/GEAR-SONIC`. They were not
+trained on this project's Xsens recordings. The recordings are converted to
+runtime G1 references; SONIC modifies the requested movement as needed for
+dynamic balance.
+
+The recommended recorded-playback interface is:
+
+```bash
+cd ~/Projects/Humonoid_retargeting_082026
+.conda-sonic-stream/bin/python -m retargeting.sonic_gui
+```
+
+Click `START MUJOCO + SONIC`, wait for `STACK ONLINE` and `Init Done`, select a
+recording, and click `PLAY SELECTED + START CONTROLLER`. The GUI handles stream
+arming, the nominal standing prefix, controller activation, and graphical
+MuJoCo support release. Isaac playback remains a separate kinematic comparison
+and does not use the SONIC controller.
+
 ## 11. Safety Layers
 
 Robotics safety must be designed as layers, not as one emergency-stop button.

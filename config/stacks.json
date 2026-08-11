@@ -76,7 +76,8 @@
           "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy/reference/example",
           "{projects}/TensorRT-10.13.3.9/lib/libnvinfer.so.10.13.3",
           "{projects}/onnxruntime-linux-x64-1.16.3/lib/libonnxruntime.so.1.16.3",
-          "{projects}/sonic-build-deps/lib/libzmq.so.5"
+          "{projects}/sonic-build-deps/lib/libzmq.so.5",
+          "{projects}/sonic-build-deps/bin/xdotool"
         ]
       },
       "components": [

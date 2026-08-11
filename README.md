@@ -165,6 +165,19 @@ C++ dependencies are isolated under `~/Projects/sonic-build-deps`; ROS 2 is not
 enabled in the SONIC controller. The stack launches the verified binary directly
 instead of rebuilding through upstream `deploy.sh` on every run.
 
+The policy is NVIDIA's externally pretrained, Unitree G1-specific release from
+[`nvidia/GEAR-SONIC`](https://huggingface.co/nvidia/GEAR-SONIC). It was not
+trained or fine-tuned on the local Xsens recordings. The recordings are runtime
+motion references that the policy may adjust to preserve balance. The downloaded
+deployment files are kept in the sibling checkout:
+
+```text
+~/Projects/GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_encoder.onnx
+~/Projects/GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/model_decoder.onnx
+~/Projects/GR00T-WholeBodyControl/gear_sonic_deploy/policy/release/observation_config.yaml
+~/Projects/GR00T-WholeBodyControl/gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx
+```
+
 Once `python3 retargetctl.py check sonic-g1-mujoco` reports ready, run the
 gravity-enabled test in two terminals:
 
@@ -184,11 +197,36 @@ PATH="$HOME/Projects/sonic-build-deps/bin:$PATH" \
   outputs/xsens-g1-batch/pouring-water/sonic_reference
 ```
 
-In the SONIC controller pane, press `]` to start control and `ENTER` to enable
-ZMQ streaming before publishing. In the MuJoCo window, press `9` to release the
-elastic support. Press `O` to stop. The publisher only binds a local ZMQ source;
-it has no Unitree hardware output path. The first complete `Pouring water` test
-was accepted end to end but fell once; see [`docs/baseline.md`](docs/baseline.md).
+Play every generated reference sequentially in the same running SONIC session:
+
+```bash
+.conda-sonic-stream/bin/python -m retargeting.sonic_playlist \
+  outputs/xsens-g1-batch
+```
+
+The recommended interface is the simulation-only PyQt control console. It starts and stops the SONIC
+stack, opens the native MuJoCo viewer, enables controller streaming, and plays
+individual recordings or the complete queue. The same recording browser can
+also launch the selected source MVNX in NVIDIA Isaac Sim for separate kinematic
+IK inspection:
+
+```bash
+.conda-sonic-stream/bin/python -m retargeting.sonic_gui
+```
+
+In the GUI, click `START MUJOCO + SONIC`, wait for `STACK ONLINE` and `Init Done`,
+select a recording, and click `PLAY SELECTED + START CONTROLLER`. Playback arms
+ZMQ automatically, adds a two-second standing prefix, loads the selected
+reference before starting control, and releases MuJoCo's graphical elastic
+support after 1.5 seconds. Double-clicking a recording performs the same action.
+Do not run `sonic_stream` or `sonic_playlist` while the GUI is open because only
+one publisher can bind loopback port `5556`.
+
+For command-line operation, press `ENTER` in the SONIC pane to enable ZMQ, publish
+the reference, press `]` to start control, and send `9` to the graphical MuJoCo
+viewer rather than its tmux terminal. Press `O` to stop. The publisher has no
+Unitree hardware output path. See [`docs/baseline.md`](docs/baseline.md) for the
+measured dynamic results and remaining limitations.
 
 ## Available Stacks
 

@@ -45,6 +45,13 @@ This creates `.venv_sim` and installs MuJoCo plus the Unitree Python DDS bridge.
 
 ## Download SONIC Models
 
+The deployment models come from NVIDIA's public
+[`nvidia/GEAR-SONIC`](https://huggingface.co/nvidia/GEAR-SONIC) repository. They
+are externally pretrained for Unitree G1; they were not trained or fine-tuned on
+the Xsens recordings in this workspace. The local Pink retargeter converts each
+recording into a 29-joint runtime reference, and the pretrained policy generates
+balanced control actions from that reference and simulated robot observations.
+
 Install the Hugging Face client in the SONIC simulation environment and run the
 official public downloader:
 
@@ -62,6 +69,12 @@ gear_sonic_deploy/policy/release/model_decoder.onnx
 gear_sonic_deploy/policy/release/observation_config.yaml
 gear_sonic_deploy/planner/target_vel/V2/planner_sonic.onnx
 ```
+
+`model_encoder.onnx` encodes the G1 motion reference,
+`model_decoder.onnx` produces the 29 controlled G1 body-joint actions, and
+`planner_sonic.onnx` is the separately downloaded motion planner used by the
+deployment binary. The GUI's recorded Protocol v1 path uses the encoder and
+decoder for tracking; it does not train any model.
 
 ## Install TensorRT and ONNX Runtime
 
@@ -152,6 +165,58 @@ standard Python virtual environment on another machine.
 
 ## Check and Launch
 
+### PyQt Console
+
+Install the GUI dependency in the existing publisher environment:
+
+```bash
+.conda-sonic-stream/bin/python -m pip install -r requirements-sonic-gui.txt
+~/miniforge3/bin/conda install \
+  -p "$PWD/.conda-sonic-stream" -c conda-forge xcb-util-cursor -y
+```
+
+Launch the simulation console from this repository:
+
+```bash
+.conda-sonic-stream/bin/python -m retargeting.sonic_gui
+```
+
+The console controls the `mujoco` and `sonic` tmux windows, while MuJoCo's
+native viewer remains the 3D display. Use `START MUJOCO + SONIC`, wait for
+`STACK ONLINE` and `Init Done`, select a recording, and click `PLAY SELECTED +
+START CONTROLLER`. The GUI arms the recorded stream automatically; the separate
+arm button is only needed for manual diagnostics. The GUI publishes the selected reference before
+starting controller output, preventing SONIC's bundled default dance motion from
+running during startup. It prepends a two-second nominal standing hold and keeps
+MuJoCo's elastic support enabled for the first 1.5 seconds of controller output.
+The GUI then sends exactly one `9` event to the graphical MuJoCo viewer through
+`xdotool`; writing `9` to the tmux terminal does not reach MuJoCo's GLFW callback.
+The robot remains visibly suspended after arming until `PLAY SELECTED + START
+CONTROLLER` or `PLAY ALL 12 RECORDINGS` is selected; arming alone does not send a
+trajectory or release support.
+The nominal G1 stance has visibly bent hips, knees, and ankles; small leg motion
+is expected from dynamic balance, but repeated stepping or falling is not a
+successful standing baseline. `STOP QUEUE AFTER CURRENT` prevents the
+next clip from being sent but cannot pause a trajectory already accepted by
+SONIC. `EMERGENCY STOP CONTROLLER` sends SONIC's stop command immediately.
+
+`VIEW SELECTED IN ISAAC SIM` starts the existing kinematic retargeting playback
+for that recording in a separate `retarget-isaac-g1` tmux session. Isaac Sim is
+an independent visual IK validator: it does not use SONIC, gravity, contacts, or
+the MuJoCo controller path. `STOP ISAAC SIM` closes only that session. Running
+Isaac and SONIC simultaneously increases GPU memory and compute usage, so stop
+the simulator that is not being inspected when resources are constrained.
+
+The GUI binds only to `tcp://127.0.0.1:5556` and does not provide a hardware
+profile. Do not run the command-line playlist publisher at the same time because
+only one publisher can bind that endpoint.
+
+The GUI normalizes isolated tmux launches to `TERM=xterm-256color` and the
+`sonic-build-deps` terminfo database. This is required when a host terminal such
+as Ghostty exports a custom `TERM` entry unavailable in the isolated prefix.
+
+### Command Line
+
 ```bash
 cd ~/Projects/Humonoid_retargeting_082026
 python3 retargetctl.py check sonic-g1-mujoco
@@ -224,6 +289,25 @@ Any generated clip can be selected by replacing the directory, for example:
 
 The publisher checks the 50 Hz rate, 29-joint IsaacLab order, CSV row counts,
 finite values, and normalized root quaternions before transmission.
+
+To validate and list every generated clip:
+
+```bash
+.conda-sonic-stream/bin/python -m retargeting.sonic_playlist \
+  outputs/xsens-g1-batch --dry-run
+```
+
+To play all generated references alphabetically through one running SONIC
+session, with a three-second gap between clips:
+
+```bash
+.conda-sonic-stream/bin/python -m retargeting.sonic_playlist \
+  outputs/xsens-g1-batch
+```
+
+The playlist validates and packs every clip before opening its loopback-only ZMQ
+socket. MuJoCo can automatically reset after a fall; a reset does not make the
+following reference dynamically valid.
 
 ## Stop
 

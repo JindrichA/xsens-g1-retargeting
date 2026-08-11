@@ -1,5 +1,29 @@
 # Retargeting Baseline
 
+## 2026-08-11: Grounded GUI Playback
+
+Input: `outputs/xsens-g1-batch/lifting-boxes/sonic_reference`
+
+Configuration:
+
+- PyQt simulation console on loopback-only ZMQ.
+- Two-second nominal standing prefix at 50 Hz.
+- Selected reference decoded before SONIC control activation.
+- MuJoCo elastic support retained for 1.5 seconds after control activation, then
+  released by one key event sent to the graphical MuJoCo viewer.
+
+Results:
+
+- SONIC established Protocol v1 and selected `Reference motion name: streamed`.
+- The 841-frame combined standing-prefix/reference message completed.
+- MuJoCo and SONIC remained connected and the controller remained active after
+  completion.
+- The earlier floating behavior was traced to sending `9` to the tmux terminal;
+  MuJoCo's GLFW callback only receives the event through its graphical window.
+
+This confirms the repeatable GUI lifecycle and grounded controller path. It does
+not replace dynamic telemetry or prove that every recording is fall-free.
+
 ## 2026-08-10: First SONIC Dynamic Playback
 
 Input: `outputs/xsens-g1-batch/pouring-water/sonic_reference`
