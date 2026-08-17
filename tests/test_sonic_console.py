@@ -9,6 +9,7 @@ from retargeting.sonic_console import (
     StackController,
     StackState,
     discover_recordings,
+    import_mvnx_command,
     pack_recording,
     parse_stack_state,
 )
@@ -94,6 +95,13 @@ class SonicConsoleTests(unittest.TestCase):
             self.skipTest("isolated tmux is not installed")
         self.assertEqual(controller.environment["TERM"], "xterm-256color")
         self.assertIn("sonic-build-deps/share/terminfo", controller.environment["TERMINFO"])
+
+    def test_import_mvnx_command_uses_batch_export(self):
+        source = self.root / "new motion.mvnx"
+        command = import_mvnx_command(source, self.root / "output")
+        self.assertEqual(Path(command[1]).name, "batch_export.py")
+        self.assertEqual(command[2:4], ["--input", str(source.resolve())])
+        self.assertEqual(command[4], "--output")
 
 
 if __name__ == "__main__":

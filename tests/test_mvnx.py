@@ -60,6 +60,23 @@ class MvnxTests(unittest.TestCase):
         with self.assertRaisesRegex(MvnxError, "non-contiguous"):
             list(iter_frames(self.path))
 
+    def test_reads_pose_only_export_without_optional_channels(self):
+        pose_only = MVNX.replace('<joints><joint label="jL5S1"/></joints>', "")
+        pose_only = pose_only.replace(
+            '<footContactDefinition><contactDefinition label="LeftFoot_Heel" index="0"/></footContactDefinition>',
+            "",
+        )
+        pose_only = pose_only.replace('<jointAngle>4 5 6</jointAngle><footContacts>1</footContacts>', "")
+        pose_only = pose_only.replace('<jointAngle>5 6 7</jointAngle><footContacts>0</footContacts>', "")
+        pose_only = pose_only.replace('<centerOfMass>1 2 3 4 5 6 7 8 9</centerOfMass>', "")
+        self.path.write_text(textwrap.dedent(pose_only), encoding="utf-8")
+        metadata = read_metadata(self.path)
+        frames = list(iter_frames(self.path, metadata))
+        self.assertEqual(metadata.joint_names, ())
+        self.assertEqual(frames[0].joint_angles_zxy, ())
+        self.assertEqual(frames[0].foot_contacts, ())
+        self.assertEqual(frames[0].center_of_mass, ())
+
 
 if __name__ == "__main__":
     unittest.main()

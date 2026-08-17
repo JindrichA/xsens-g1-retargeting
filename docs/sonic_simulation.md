@@ -187,8 +187,17 @@ native viewer remains the 3D display. Use `START MUJOCO + SONIC`, wait for
 START CONTROLLER`. The GUI arms the recorded stream automatically; the separate
 arm button is only needed for manual diagnostics. The GUI publishes the selected reference before
 starting controller output, preventing SONIC's bundled default dance motion from
-running during startup. It prepends a two-second nominal standing hold and keeps
-MuJoCo's elastic support enabled for the first 1.5 seconds of controller output.
+running during startup. It prepends a six-second static hold, waits for SONIC to
+confirm entry into `CONTROL`, and then keeps MuJoCo's elastic support enabled for
+another 0.5 seconds. Longer support makes the controller settle against the
+band and causes a load change at release. The remaining
+hold lets SONIC settle into unsupported
+balance before motion begins.
+The stack's local `retargeting.grounded_sim_loop` launcher initializes the robot
+and every automatic fall reset in SONIC's nominal crouched pose. It solves the
+pelvis height from MuJoCo's floor contacts and aligns the elastic anchor to that
+height, eliminating the
+upstream suspended-start drop while retaining temporary startup support.
 The GUI then sends exactly one `9` event to the graphical MuJoCo viewer through
 `xdotool`; writing `9` to the tmux terminal does not reach MuJoCo's GLFW callback.
 The robot remains visibly suspended after arming until `PLAY SELECTED + START
@@ -210,6 +219,11 @@ the simulator that is not being inspected when resources are constrained.
 The GUI binds only to `tcp://127.0.0.1:5556` and does not provide a hardware
 profile. Do not run the command-line playlist publisher at the same time because
 only one publisher can bind that endpoint.
+
+`IMPORT MVNX RECORDING` accepts one `.mvnx` file and invokes `batch_export.py` in
+the background. The GUI remains responsive, exporter output appears in the
+telemetry panel, and the recording table refreshes automatically after a
+successful export.
 
 The GUI normalizes isolated tmux launches to `TERM=xterm-256color` and the
 `sonic-build-deps` terminfo database. This is required when a host terminal such

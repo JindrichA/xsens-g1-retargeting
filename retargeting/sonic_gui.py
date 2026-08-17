@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -19,10 +21,11 @@ if sys.platform.startswith("linux"):
 
 try:
     import zmq
-    from PyQt6.QtCore import QTimer, Qt
+    from PyQt6.QtCore import QProcess, QTimer, Qt
     from PyQt6.QtGui import QFont
     from PyQt6.QtWidgets import (
         QApplication,
+        QFileDialog,
         QFrame,
         QHBoxLayout,
         QHeaderView,
@@ -46,11 +49,15 @@ except ImportError as error:
 from .sonic_console import (
     ConsoleError,
     GUI_PREROLL_SECONDS,
+    GUI_SUPPORTED_CONTROL_SECONDS,
     IsaacController,
+    LivePipelineController,
     Recording,
     StackController,
     StackState,
     discover_recordings,
+    import_mvnx_command,
+    live_next_action,
     pack_recording,
 )
 
@@ -60,25 +67,52 @@ BIND_ENDPOINT = "tcp://127.0.0.1:5556"
 
 class SonicPublisher:
     def __init__(self, bind: str = BIND_ENDPOINT) -> None:
+        self.bind = bind
+        self.context = None
+        self.socket = None
+
+    def _open(self) -> None:
+        if self.socket is not None:
+            return
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.PUB)
         self.socket.setsockopt(zmq.LINGER, 0)
         try:
-            self.socket.bind(bind)
+            self.socket.bind(self.bind)
+            time.sleep(0.5)
         except zmq.ZMQError as error:
             self.socket.close()
             self.context.term()
-            raise ConsoleError(f"cannot bind {bind}; another trajectory publisher may be running: {error}") from error
+            self.socket = None
+            self.context = None
+            raise ConsoleError(f"cannot bind {self.bind}; another trajectory publisher may be running: {error}") from error
 
     def send(self, message: bytes) -> None:
+        self._open()
         try:
             self.socket.send(message)
         except zmq.ZMQError as error:
             raise ConsoleError(f"trajectory publish failed: {error}") from error
 
     def close(self) -> None:
-        self.socket.close()
-        self.context.term()
+        if self.socket is not None:
+            self.socket.close()
+            self.context.term()
+            self.socket = None
+            self.context = None
+
+
+LIVE_CONTROL = Path("/tmp/xsens-live-control.json")
+LIVE_STATUS = Path("/tmp/xsens-live-status.json")
+
+
+def write_live_control(calibration_generation: int, enabled: bool) -> None:
+    temporary = LIVE_CONTROL.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps({"calibration_generation": calibration_generation, "enabled": enabled}),
+        encoding="utf-8",
+    )
+    os.replace(temporary, LIVE_CONTROL)
 
 
 class MainWindow(QMainWindow):
@@ -87,6 +121,11 @@ class MainWindow(QMainWindow):
         self.recording_root = recording_root
         self.stack = StackController()
         self.isaac = IsaacController()
+        self.live_pipeline = LivePipelineController()
+        existing_control = self._read_live_control()
+        self.live_generation = existing_control.get("calibration_generation", 0)
+        self.live_enable_deadline = 0.0
+        self.live_publish_baseline = 0
         self.recordings = discover_recordings(recording_root)
         self.publisher = SonicPublisher()
         self.last_state: StackState | None = None
@@ -95,6 +134,9 @@ class MainWindow(QMainWindow):
         self.current_recording: Recording | None = None
         self.motion_started_at = 0.0
         self.motion_ends_at = 0.0
+        self.control_start_deadline = 0.0
+        self.import_process: QProcess | None = None
+        self.import_output = ""
 
         self.queue_timer = QTimer(self)
         self.queue_timer.setSingleShot(True)
@@ -141,10 +183,13 @@ class MainWindow(QMainWindow):
         self.stream_badge.setObjectName("badge")
         self.isaac_badge = QLabel("ISAAC OFFLINE")
         self.isaac_badge.setObjectName("badge")
+        self.live_badge = QLabel("LIVE OFFLINE")
+        self.live_badge.setObjectName("badge")
         header.addWidget(self.stack_badge)
         header.addWidget(self.control_badge)
         header.addWidget(self.stream_badge)
         header.addWidget(self.isaac_badge)
+        header.addWidget(self.live_badge)
         root_layout.addLayout(header)
 
         safety = QLabel(
@@ -180,7 +225,7 @@ class MainWindow(QMainWindow):
 
     def _build_recordings_panel(self) -> QFrame:
         panel, layout = self._panel("RECORDINGS", "Validated 50 Hz references in alphabetical order")
-        self.recording_table = QTableWidget(len(self.recordings), 2)
+        self.recording_table = QTableWidget(0, 2)
         self.recording_table.setHorizontalHeaderLabels(["Recording", "Duration"])
         self.recording_table.verticalHeader().setVisible(False)
         self.recording_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -188,6 +233,17 @@ class MainWindow(QMainWindow):
         self.recording_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.recording_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.recording_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._populate_recordings()
+        self.recording_table.itemDoubleClicked.connect(lambda _item: self.play_selected())
+        layout.addWidget(self.recording_table, 1)
+        self.import_button = QPushButton("IMPORT MVNX RECORDING")
+        self.import_button.clicked.connect(self.import_mvnx)
+        layout.addWidget(self.import_button)
+        return panel
+
+    def _populate_recordings(self, select_name: str | None = None) -> None:
+        self.recording_table.setRowCount(len(self.recordings))
+        selected_row = 0
         for row, recording in enumerate(self.recordings):
             name_item = QTableWidgetItem(recording.name.replace("-", " ").title())
             name_item.setData(Qt.ItemDataRole.UserRole, row)
@@ -195,10 +251,56 @@ class MainWindow(QMainWindow):
             duration_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.recording_table.setItem(row, 0, name_item)
             self.recording_table.setItem(row, 1, duration_item)
-        self.recording_table.selectRow(0)
-        self.recording_table.itemDoubleClicked.connect(lambda _item: self.play_selected())
-        layout.addWidget(self.recording_table, 1)
-        return panel
+            if recording.name == select_name:
+                selected_row = row
+        if self.recordings:
+            self.recording_table.selectRow(selected_row)
+
+    def import_mvnx(self) -> None:
+        source, _filter = QFileDialog.getOpenFileName(
+            self, "Import Xsens MVNX recording", str(Path.home()), "Xsens MVNX (*.mvnx)"
+        )
+        if not source:
+            return
+        command = import_mvnx_command(source, self.recording_root)
+        self.import_process = QProcess(self)
+        self.import_output = ""
+        self.import_process.setWorkingDirectory(str(Path(__file__).resolve().parent.parent))
+        self.import_process.setProgram(command[0])
+        self.import_process.setArguments(command[1:])
+        self.import_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self.import_process.readyReadStandardOutput.connect(self._read_import_output)
+        self.import_process.finished.connect(lambda code, _status: self._import_finished(code, Path(source).stem))
+        self.import_button.setEnabled(False)
+        self.import_button.setText("IMPORTING IN ISAAC...")
+        self._append_log(f"Importing MVNX: {source}")
+        self.import_process.start()
+
+    def _read_import_output(self) -> None:
+        if self.import_process is None:
+            return
+        output = bytes(self.import_process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        if output.strip():
+            self.import_output = (self.import_output + output)[-12000:]
+            self._append_log(output)
+
+    def _import_finished(self, exit_code: int, source_stem: str) -> None:
+        self._read_import_output()
+        self.import_button.setEnabled(True)
+        self.import_button.setText("IMPORT MVNX RECORDING")
+        if exit_code:
+            detail = self.import_output.strip()[-3000:] or "No exporter output was captured."
+            self._show_error(ConsoleError(f"MVNX export failed with status {exit_code}:\n\n{detail}"))
+        else:
+            try:
+                self.recordings = discover_recordings(self.recording_root)
+                from batch_export import slugify
+
+                self._populate_recordings(slugify(source_stem))
+                self._append_log(f"MVNX import complete: {source_stem}")
+            except ConsoleError as error:
+                self._show_error(error)
+        self.import_process = None
 
     def _build_control_panel(self) -> QFrame:
         panel, layout = self._panel("CONTROL DECK", "Stack lifecycle and controller-driven playback")
@@ -230,6 +332,33 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.play_button)
         layout.addWidget(self.all_button)
         layout.addWidget(self.cancel_button)
+
+        live_divider = QFrame()
+        live_divider.setFrameShape(QFrame.Shape.HLine)
+        live_divider.setObjectName("divider")
+        layout.addWidget(live_divider)
+        live_label = QLabel("LIVE XSENS / SIMULATION ONLY")
+        live_label.setObjectName("caption")
+        layout.addWidget(live_label)
+        self.live_guide = QLabel("STEP 1 / Start MuJoCo + SONIC.")
+        self.live_guide.setObjectName("liveGuide")
+        self.live_guide.setWordWrap(True)
+        layout.addWidget(self.live_guide)
+        self.live_calibrate_button = QPushButton("CALIBRATE LIVE NEUTRAL")
+        self.live_calibrate_button.clicked.connect(self.calibrate_live)
+        self.live_enable_button = QPushButton("ENABLE LIVE XSENS")
+        self.live_enable_button.clicked.connect(self.enable_live)
+        self.live_disable_button = QPushButton("DISABLE LIVE XSENS")
+        self.live_disable_button.clicked.connect(self.disable_live)
+        self.live_start_button = QPushButton("START LIVE XSENS PIPELINE")
+        self.live_start_button.clicked.connect(self.start_live_pipeline)
+        self.live_stop_button = QPushButton("STOP LIVE XSENS PIPELINE")
+        self.live_stop_button.clicked.connect(self.stop_live_pipeline)
+        layout.addWidget(self.live_start_button)
+        layout.addWidget(self.live_stop_button)
+        layout.addWidget(self.live_calibrate_button)
+        layout.addWidget(self.live_enable_button)
+        layout.addWidget(self.live_disable_button)
 
         isaac_divider = QFrame()
         isaac_divider.setFrameShape(QFrame.Shape.HLine)
@@ -294,6 +423,7 @@ class MainWindow(QMainWindow):
             QHeaderView::section { background: #20292e; color: #91a4aa; border: none; border-bottom: 1px solid #354148; padding: 7px; font-size: 10px; font-weight: 700; }
             QTableWidget::item { padding: 7px; border-bottom: 1px solid #1d262b; }
             #nowPlaying { color: #f1f5f6; border-left: 3px solid #f2b84b; padding: 8px 10px; font-weight: 700; }
+            #liveGuide { color: #dffbff; background: #173039; border-left: 3px solid #50c8ce; padding: 9px 10px; font-weight: 700; }
             #mono { color: #91a4aa; font-family: DejaVu Sans Mono, monospace; }
             QProgressBar { height: 8px; background: #0c1114; border: 1px solid #29343a; border-radius: 2px; text-align: center; color: transparent; }
             QProgressBar::chunk { background: #f2b84b; }
@@ -322,8 +452,9 @@ class MainWindow(QMainWindow):
             self.stop_stack_button.setEnabled(state.session_exists)
             self.enable_button.setEnabled(state.sonic_initialized and not state.streaming_enabled)
             self.enable_button.setText("RECORDED STREAM ARMED" if state.streaming_enabled else "ARM RECORDED XSENS STREAM")
-            self.play_button.setEnabled(state.sonic_initialized)
-            self.all_button.setEnabled(state.sonic_initialized and not self.queue)
+            live_pipeline = self.live_pipeline.state()
+            self.play_button.setEnabled(state.sonic_initialized and not live_pipeline.retarget_running)
+            self.all_button.setEnabled(state.sonic_initialized and not self.queue and not live_pipeline.retarget_running)
             isaac_state = self.isaac.state()
             self.isaac_running = isaac_state.running
             self._set_badge(
@@ -332,6 +463,18 @@ class MainWindow(QMainWindow):
                 isaac_state.running,
             )
             self.isaac_stop_button.setEnabled(isaac_state.session_exists)
+            live = self._live_status()
+            live_state = live.get("state", "OFFLINE")
+            live_active = live_state == "ENABLED"
+            self._set_badge(self.live_badge, f"LIVE {live_state}", live_active)
+            self.live_calibrate_button.setEnabled(state.sonic_initialized and live_state not in {"OFFLINE", "NO_DATA"})
+            self.live_enable_button.setEnabled(live_state == "CALIBRATED_DISABLED")
+            self.live_disable_button.setEnabled(live_active)
+            self.live_start_button.setEnabled(
+                not (live_pipeline.source_running and live_pipeline.capture_running and live_pipeline.retarget_running)
+            )
+            self.live_stop_button.setEnabled(live_pipeline.session_exists)
+            self.live_guide.setText(live_next_action(state.sonic_initialized, live_pipeline, live))
             if state.running:
                 self.log_view.setPlainText(self.stack.capture_log("sonic", 100))
                 scrollbar = self.log_view.verticalScrollBar()
@@ -377,6 +520,109 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(1200, self.refresh_status)
         except ConsoleError as error:
             self._show_error(error)
+
+    def _live_status(self) -> dict:
+        try:
+            return json.loads(LIVE_STATUS.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"state": "OFFLINE"}
+
+    def _read_live_control(self) -> dict:
+        try:
+            return json.loads(LIVE_CONTROL.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"calibration_generation": 0, "enabled": False}
+
+    def calibrate_live(self) -> None:
+        if QMessageBox.question(
+            self,
+            "Calibrate live Xsens",
+            "Stand upright in the neutral pose. Capture this pose as live calibration?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self.live_generation += 1
+        write_live_control(self.live_generation, False)
+        self._append_log(f"Live neutral calibration requested: generation {self.live_generation}.")
+
+    def start_live_pipeline(self) -> None:
+        try:
+            self.publisher.close()
+            write_live_control(self.live_generation, False)
+            for path in (Path("/tmp/xsens-live-frame.json"), LIVE_STATUS):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            self._append_log(self.live_pipeline.start())
+        except ConsoleError as error:
+            self._show_error(error)
+
+    def stop_live_pipeline(self) -> None:
+        write_live_control(self.live_generation, False)
+        try:
+            self._append_log(self.live_pipeline.stop())
+        except ConsoleError as error:
+            self._show_error(error)
+
+    def enable_live(self) -> None:
+        state = self.stack.state()
+        pipeline = self.live_pipeline.state()
+        live = self._live_status()
+        age_ms = live.get("age_ms")
+        if not state.sonic_initialized:
+            self._show_error(ConsoleError("SONIC is not initialized; complete Step 1 first"))
+            return
+        if not (pipeline.source_running and pipeline.capture_running and pipeline.retarget_running):
+            self._show_error(ConsoleError("the complete live pipeline is not running; complete Step 2 first"))
+            return
+        if live.get("state") != "CALIBRATED_DISABLED" or not isinstance(age_ms, (int, float)) or age_ms > 150:
+            self._show_error(
+                ConsoleError("fresh calibrated Xsens data is required; restore MVN streaming and calibrate again")
+            )
+            return
+        try:
+            self.publisher.close()
+            self.live_publish_baseline = int(live.get("published_windows", 0))
+            self.live_enable_deadline = time.monotonic() + 5.0
+            write_live_control(self.live_generation, True)
+            self._append_log("Live enable requested; waiting for confirmed SONIC reference windows.")
+            QTimer.singleShot(100, self._wait_for_live_output)
+        except ConsoleError as error:
+            self._show_error(error)
+
+    def disable_live(self) -> None:
+        write_live_control(self.live_generation, False)
+        self._append_log("Live Xsens publication disabled.")
+
+    def _start_live_control(self) -> None:
+        try:
+            self.stack.start_control()
+            QTimer.singleShot(1500, self._release_support)
+            self._append_log("Live SONIC control started; support releases after stabilization.")
+        except ConsoleError as error:
+            self._show_error(error)
+
+    def _wait_for_live_output(self) -> None:
+        live = self._live_status()
+        if live.get("state") == "STALE":
+            write_live_control(self.live_generation, False)
+            self._show_error(ConsoleError("Xsens became stale before live control started; calibrate again"))
+            return
+        if int(live.get("published_windows", 0)) > self.live_publish_baseline:
+            try:
+                self.stack.arm_stream()
+                self._append_log("Live Protocol v1 output confirmed; arming SONIC stream.")
+                QTimer.singleShot(700, self._start_live_control)
+            except ConsoleError as error:
+                self._show_error(error)
+            return
+        if time.monotonic() >= self.live_enable_deadline:
+            write_live_control(self.live_generation, False)
+            self._show_error(
+                ConsoleError("no live SONIC reference was produced within 5 seconds; check MVN streaming and recalibrate")
+            )
+            return
+        QTimer.singleShot(100, self._wait_for_live_output)
 
     def play_selected(self) -> None:
         row = self.recording_table.currentRow()
@@ -506,14 +752,31 @@ class MainWindow(QMainWindow):
     def _start_control_after_publish(self) -> None:
         try:
             self.stack.start_control()
+            self.control_start_deadline = time.monotonic() + 5.0
             self._append_log(
-                "Selected reference loaded; controller started under elastic support. "
-                "Support releases after the standing hold begins."
+                "Selected reference loaded; waiting for confirmed SONIC control under elastic support."
             )
-            QTimer.singleShot(1500, self._release_support)
-            QTimer.singleShot(1000, self.refresh_status)
+            QTimer.singleShot(100, self._wait_for_recorded_control)
         except ConsoleError as error:
             self._show_error(error)
+
+    def _wait_for_recorded_control(self) -> None:
+        try:
+            state = self.stack.state()
+        except ConsoleError as error:
+            self._show_error(error)
+            return
+        if state.control_started:
+            self._append_log(
+                f"SONIC control confirmed; retaining support for {GUI_SUPPORTED_CONTROL_SECONDS:.1f} seconds."
+            )
+            QTimer.singleShot(round(GUI_SUPPORTED_CONTROL_SECONDS * 1000), self._release_support)
+            QTimer.singleShot(1000, self.refresh_status)
+            return
+        if time.monotonic() >= self.control_start_deadline:
+            self._show_error(ConsoleError("SONIC did not confirm CONTROL within 5 seconds; support remains enabled"))
+            return
+        QTimer.singleShot(100, self._wait_for_recorded_control)
 
     def _release_support(self) -> None:
         try:

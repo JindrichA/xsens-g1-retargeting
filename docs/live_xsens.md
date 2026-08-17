@@ -2,14 +2,14 @@
 
 ## Status
 
-The Xsens ROS 2 source, offline G1 retargeter, SONIC protocol publisher, and
-SONIC MuJoCo controller work independently. The live adapter between ROS 2
-`/link_states` and continuous G1 inverse kinematics is not implemented yet.
+The freshness-aware Xsens ROS 2 source, atomic ROS capture boundary, continuous
+Pink retargeter, SONIC protocol publisher, and SONIC MuJoCo controller are
+implemented. Live suit validation is still pending; keep this simulation-only.
 
-This manual documents the measured live input contract, the intended process
-layout, operator procedure, safety requirements, and implementation checklist.
-Commands marked as working can be used now. The future adapter command is shown
-as a target interface, not as an existing executable.
+This manual documents the measured live input contract, process layout,
+operator procedure, and safety requirements. The adapter uses explicit
+calibration and enable controls plus a `150 ms` unique-source watchdog. A stale
+stream requests SONIC emergency stop and requires new calibration before resume.
 
 Real-robot output is outside the scope of this manual. Keep SONIC on its
 simulation profile throughout development.
@@ -27,7 +27,7 @@ xsens_mvn_ros2 (ROS 2 Jazzy)
         v
 ROS capture process
         |
-        | canonical named Xsens frame over ZMQ or an atomic file
+        | atomic /tmp/xsens-live-frame.json snapshot
         v
 Pink retargeting process at 50 Hz
         |
@@ -52,6 +52,11 @@ file at the process boundaries.
 - Built sibling checkout at `~/Projects/xsens_mvn_ros2`.
 - This repository's recorded-motion retargeting baseline validated first.
 - The SONIC simulation setup from [SONIC Simulation Manual](sonic_simulation.md).
+- Pink installed in the existing `tv` environment:
+
+  ```bash
+  ~/miniforge3/bin/conda install -n tv -c conda-forge pink -y
+  ```
 
 If MVN Studio runs on Windows, determine the Ubuntu workstation's LAN address:
 
@@ -186,28 +191,28 @@ Important conversions:
 
 ## Live Adapter Responsibilities
 
-The adapter should be implemented in this repository as two processes.
+The adapter is implemented in this repository as two environment-isolated processes.
 
 ### ROS Capture Process
 
-The ROS process should:
+The implemented ROS process:
 
 1. Subscribe to `/link_states` using ROS 2 Jazzy.
 2. Build a dictionary by `state.header.frame_id`.
 3. Require all 23 canonical segments before producing a frame.
 4. Reorder and normalize quaternions.
-5. Read an explicit source datagram sequence and last-receive timestamp from an
-   extended driver; these values are not available in the current message.
+5. Reads the quaternion datagram sample counter, frame time, and steady-clock
+   receive timestamp from the extended `LinkStateArray` message.
 6. Attach the source sequence/timestamp and local receive timestamp.
 7. Reject non-finite values and implausible quaternion norms.
-8. Publish only the latest canonical frame over a dedicated boundary such as
-   ZMQ port `5558`.
+8. Atomically replaces `/tmp/xsens-live-frame.json`, preserving latest-frame
+   semantics without adding non-ROS dependencies to Jazzy.
 
 It must not import Isaac Sim, Pink, SONIC, or Unitree controller packages.
 
 ### Retargeting Process
 
-The retargeting process should:
+The implemented retargeting process:
 
 1. Require an explicit upright neutral-calibration action.
 2. Reuse the same pelvis-relative torso, wrist, ankle, and root target logic as
@@ -220,35 +225,45 @@ The retargeting process should:
 7. Publish to SONIC's local `pose` endpoint on port `5556`.
 
 The existing `retargeting.sonic_stream` module provides the validated packed
-wire format and accepts explicit strictly increasing `frame_indices`, but its
-command-line interface currently loads a complete exported trajectory. The live
-implementation should reuse `pack_protocol_v1`, not write temporary CSV files
-for every frame.
+wire format. `retargeting.live_retarget` reuses `pack_protocol_v1` directly and
+does not write temporary trajectory CSV files.
 
 ## Target Operator Procedure
 
-This is the intended procedure after the adapter exists:
+Launch the PyQt console and use this procedure:
+
+```bash
+.conda-sonic-stream/bin/python -m retargeting.sonic_gui
+```
 
 1. Start SONIC MuJoCo and keep the elastic support enabled.
-2. Start the Xsens ROS source and verify `/diagnostics` and `/link_states`.
+2. Click `START LIVE XSENS PIPELINE`; it starts the ROS source, atomic capture,
+   and headless Pink process.
 3. Stand upright in a documented neutral pose.
-4. Start the ROS capture process.
-5. Request neutral calibration in the retargeting process.
+4. Wait for `LIVE WAITING_FOR_CALIBRATION`.
+5. Click `CALIBRATE LIVE NEUTRAL`.
 6. Verify the retargeted G1 preview before enabling dynamic control.
-7. Press `]` in SONIC to start simulation control.
-8. Press `ENTER` in SONIC to enable ZMQ streaming.
-9. Release the MuJoCo elastic support with `9`.
-10. Explicitly enable live publication.
+7. Click `ENABLE LIVE XSENS`; the GUI arms ZMQ, starts SONIC, and releases the
+   graphical MuJoCo support after stabilization.
 11. Keep the operator ready to press `O` in SONIC.
 
-The future command interface should make calibration and enable actions
-explicit, for example:
+The GUI displays these steps as a live next-action panel. `ENABLE LIVE XSENS`
+is accepted only when the complete pipeline is running, the current state is
+`CALIBRATED_DISABLED`, and frame age is below `150 ms`. It then waits for a
+confirmed rolling Protocol v1 window before arming or starting SONIC. If no
+window appears within five seconds, control remains disabled and the GUI reports
+an actionable error.
+
+The underlying commands are:
 
 ```text
-python -m retargeting.live_xsens capture ...      # planned, not implemented
-python -m retargeting.live_xsens calibrate ...    # planned, not implemented
-python -m retargeting.live_xsens stream --sim ... # planned, not implemented
+python3 -m retargeting.live_capture_ros
+conda run -n tv python -m retargeting.live_retarget
 ```
+
+`retargeting.live_retarget` owns `tcp://127.0.0.1:5556` while running. Stop the
+live pipeline before playing recorded clips from the GUI. Recorded and live
+publishers are intentionally mutually exclusive.
 
 ## Watchdog and Fail-Safe Requirements
 
@@ -272,6 +287,11 @@ tested with the controller's state behavior in MuJoCo.
 
 Inject frozen, delayed, duplicated, reordered, and dropped frames in unit tests.
 Tests must not launch ROS, MuJoCo, Isaac Sim, or the controller.
+
+The implemented watchdog rejects repeated and backward source counters, handles
+uint32 wraparound, and requests SONIC stop after `150 ms` without a unique frame.
+After a stale stop, incrementing the calibration generation is required before
+live output resumes.
 
 ## Initial Simulation Acceptance Criteria
 

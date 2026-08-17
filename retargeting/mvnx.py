@@ -138,9 +138,19 @@ def iter_frames(path: str | Path, metadata: MvnxMetadata | None = None) -> Itera
             fields = {_local_name(child.tag): child.text for child in element}
             quaternions = _groups(fields.get("orientation"), 4, "orientation")
             positions = _groups(fields.get("position"), 3, "position")
-            joint_angles = _groups(fields.get("jointAngle"), 3, "jointAngle")
-            contacts = tuple(int(value) for value in _values(fields.get("footContacts"), "footContacts"))
-            center_of_mass = _values(fields.get("centerOfMass"), "centerOfMass")
+            joint_angles = (
+                _groups(fields.get("jointAngle"), 3, "jointAngle") if metadata.joint_names else ()
+            )
+            contacts = (
+                tuple(int(value) for value in _values(fields.get("footContacts"), "footContacts"))
+                if metadata.contact_names
+                else ()
+            )
+            center_of_mass = (
+                _values(fields.get("centerOfMass"), "centerOfMass")
+                if fields.get("centerOfMass")
+                else ()
+            )
 
             if len(quaternions) != len(metadata.segment_names):
                 raise MvnxError(f"frame {index}: expected {len(metadata.segment_names)} segment quaternions")
@@ -150,7 +160,7 @@ def iter_frames(path: str | Path, metadata: MvnxMetadata | None = None) -> Itera
                 raise MvnxError(f"frame {index}: expected {len(metadata.joint_names)} joint angles")
             if len(contacts) != len(metadata.contact_names):
                 raise MvnxError(f"frame {index}: expected {len(metadata.contact_names)} foot contacts")
-            if len(center_of_mass) != 9:
+            if center_of_mass and len(center_of_mass) != 9:
                 raise MvnxError(f"frame {index}: centerOfMass must contain 9 values")
 
             source_time = element.attrib.get("time")

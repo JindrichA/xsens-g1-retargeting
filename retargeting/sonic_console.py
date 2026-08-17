@@ -18,8 +18,13 @@ ROOT = Path(__file__).resolve().parent.parent
 STACK_NAME = "sonic-g1-mujoco"
 SESSION_NAME = "retarget-sonic-g1"
 ISAAC_SESSION_NAME = "retarget-isaac-g1"
-GUI_PREROLL_FRAMES = 100
+LIVE_SESSION_NAME = "retarget-live-xsens"
+GUI_PREROLL_FRAMES = 300
 GUI_PREROLL_SECONDS = GUI_PREROLL_FRAMES / 50.0
+# The MuJoCo band anchors the pelvis above SONIC's nominal 0.76 m stance. Keep
+# it only long enough to seed policy history; a longer hold creates a load drop
+# when the artificial upward force is removed.
+GUI_SUPPORTED_CONTROL_SECONDS = 0.5
 
 
 class ConsoleError(RuntimeError):
@@ -51,6 +56,41 @@ class IsaacState:
     session_exists: bool
     running: bool
     log: str
+
+
+@dataclass(frozen=True)
+class LivePipelineState:
+    session_exists: bool
+    source_running: bool
+    capture_running: bool
+    retarget_running: bool
+
+
+def live_next_action(sonic_initialized: bool, pipeline: LivePipelineState, live: dict) -> str:
+    if not sonic_initialized:
+        return "STEP 1 / Click START MUJOCO + SONIC, then wait for Init Done."
+    if not (pipeline.source_running and pipeline.capture_running and pipeline.retarget_running):
+        return "STEP 2 / Start MVN Studio streaming, then click START LIVE XSENS PIPELINE."
+    state = live.get("state", "OFFLINE")
+    if state in {"OFFLINE", "NO_DATA"}:
+        return "WAITING / No Xsens frames. In MVN Studio stream to this workstation on UDP 9763."
+    if state == "STALE":
+        return "STOPPED / Xsens frames became stale. Restore MVN streaming, then calibrate again."
+    if state == "WAITING_FOR_CALIBRATION":
+        return "STEP 3 / Stand upright and click CALIBRATE LIVE NEUTRAL."
+    if state == "CALIBRATED_DISABLED":
+        return "STEP 4 / Calibration is ready. Click ENABLE LIVE XSENS."
+    if state == "ENABLED":
+        return "LIVE ACTIVE / Keep MVN streaming. Stale input stops SONIC automatically."
+    return f"LIVE STATUS / {state}"
+
+
+def import_mvnx_command(source: str | Path, output: str | Path) -> list[str]:
+    source = Path(source).expanduser().resolve()
+    output = Path(output).expanduser().resolve()
+    if source.suffix.lower() != ".mvnx":
+        raise ConsoleError(f"not an MVNX file: {source}")
+    return [sys.executable, str(ROOT / "batch_export.py"), "--input", str(source), "--output", str(output)]
 
 
 def discover_recordings(root: str | Path) -> list[Recording]:
@@ -319,3 +359,81 @@ class IsaacController:
         if result.returncode:
             raise ConsoleError(result.stderr.strip() or "could not stop Isaac Sim")
         return "Isaac Sim stopped"
+
+
+class LivePipelineController:
+    """Supervise the ROS capture and Pink live-retarget processes."""
+
+    def __init__(self) -> None:
+        self.commands = StackController()
+
+    def state(self) -> LivePipelineState:
+        result = self.commands._tmux("has-session", "-t", LIVE_SESSION_NAME, check=False)
+        if result.returncode:
+            return LivePipelineState(False, False, False, False)
+        panes = self.commands._tmux(
+            "list-panes", "-s", "-t", LIVE_SESSION_NAME,
+            "-F", "#{window_name}:#{pane_dead}", check=False,
+        ).stdout.splitlines()
+        source_log = self._log("source")
+        capture_log = self._log("capture")
+        retarget_log = self._log("retarget")
+        return LivePipelineState(
+            True,
+            "source:0" in panes and "[live] process exited" not in source_log,
+            "capture:0" in panes and "[live] process exited" not in capture_log,
+            "retarget:0" in panes and "[live] process exited" not in retarget_log,
+        )
+
+    def start(self) -> str:
+        state = self.state()
+        if state.source_running and state.capture_running and state.retarget_running:
+            return "Live Xsens pipeline is already running"
+        if state.session_exists:
+            self.stop()
+        source_command = (
+            f"source /opt/ros/jazzy/setup.bash && "
+            f"source {shlex.quote(str(ROOT.parent / 'xsens_mvn_ros2/install/setup.bash'))} && "
+            "ros2 launch xsens_mvn_ros2 xsens_stream.launch.py launch_rviz:=false launch_description:=false; "
+            "rc=$?; printf '\n[live] process exited with status %s\n' \"$rc\"; exec bash"
+        )
+        ros_command = (
+            f"cd {shlex.quote(str(ROOT))} && source /opt/ros/jazzy/setup.bash && "
+            f"source {shlex.quote(str(ROOT.parent / 'xsens_mvn_ros2/install/setup.bash'))} && "
+            "python3 -m retargeting.live_capture_ros; "
+            "rc=$?; printf '\n[live] process exited with status %s\n' \"$rc\"; exec bash"
+        )
+        retarget_command = (
+            f"cd {shlex.quote(str(ROOT))} && source {shlex.quote(str(Path.home() / 'miniforge3/etc/profile.d/conda.sh'))} && "
+            "conda activate tv && python -m retargeting.live_retarget; "
+            "rc=$?; printf '\n[live] process exited with status %s\n' \"$rc\"; exec bash"
+        )
+        self.commands._tmux(
+            "new-session", "-d", "-s", LIVE_SESSION_NAME, "-n", "source",
+            "bash", "-lc", source_command,
+        )
+        try:
+            self.commands._tmux(
+                "new-window", "-t", LIVE_SESSION_NAME, "-n", "capture",
+                "bash", "-lc", ros_command,
+            )
+            self.commands._tmux(
+                "new-window", "-t", LIVE_SESSION_NAME, "-n", "retarget",
+                "bash", "-lc", retarget_command,
+            )
+        except Exception:
+            self.commands._tmux("kill-session", "-t", LIVE_SESSION_NAME, check=False)
+            raise
+        return "Started Xsens ROS source, live capture, and retargeting pipeline"
+
+    def stop(self) -> str:
+        if not self.state().session_exists:
+            return "Live Xsens pipeline is already stopped"
+        self.commands._tmux("kill-session", "-t", LIVE_SESSION_NAME)
+        return "Stopped live Xsens pipeline"
+
+    def _log(self, window: str) -> str:
+        return self.commands._tmux(
+            "capture-pane", "-p", "-t", f"{LIVE_SESSION_NAME}:{window}", "-S", "-100",
+            check=False,
+        ).stdout

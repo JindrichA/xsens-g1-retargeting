@@ -84,13 +84,46 @@
         {
           "name": "mujoco",
           "cwd": "{projects}/GR00T-WholeBodyControl",
-          "command": "source .venv_sim/bin/activate && python gear_sonic/scripts/run_sim_loop.py"
+          "command": "source .venv_sim/bin/activate && python {root}/retargeting/grounded_sim_loop.py"
         },
         {
           "name": "sonic",
           "cwd": "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy",
           "delay": 2,
           "command": "export TensorRT_ROOT={projects}/TensorRT-10.13.3.9 && export onnxruntime_ROOT={projects}/onnxruntime-linux-x64-1.16.3 && export LD_LIBRARY_PATH={projects}/TensorRT-10.13.3.9/lib:{projects}/onnxruntime-linux-x64-1.16.3/lib:{projects}/sonic-build-deps/lib:$LD_LIBRARY_PATH && ./target/release/g1_deploy_onnx_ref lo policy/release/model_decoder.onnx reference/example --obs-config policy/release/observation_config.yaml --encoder-file policy/release/model_encoder.onnx --planner-file planner/target_vel/V2/planner_sonic.onnx --input-type zmq --output-type all --zmq-host localhost --disable-crc-check"
+        }
+      ]
+    },
+    "live-xsens-sonic-sim": {
+      "description": "Freshness-aware live Xsens capture and Pink retargeting for SONIC simulation",
+      "session": "retarget-live-xsens",
+      "requirements": {
+        "executables": ["bash"],
+        "paths": [
+          "/opt/ros/jazzy/setup.bash",
+          "{projects}/xsens_mvn_ros2/install/setup.bash",
+          "{projects}/xsens_mvn_ros2/install/xsens_mvn_msgs/share/xsens_mvn_msgs/msg/LinkStateArray.idl",
+          "{home}/miniforge3/etc/profile.d/conda.sh",
+          "{projects}/unitree_rl_gym/resources/robots/g1_description/g1_29dof.urdf"
+        ]
+      },
+      "components": [
+        {
+          "name": "source",
+          "cwd": "{projects}/xsens_mvn_ros2",
+          "command": "source /opt/ros/jazzy/setup.bash && source install/setup.bash && ros2 launch xsens_mvn_ros2 xsens_stream.launch.py launch_rviz:=false launch_description:=false"
+        },
+        {
+          "name": "capture",
+          "cwd": "{root}",
+          "delay": 1,
+          "command": "source /opt/ros/jazzy/setup.bash && source {projects}/xsens_mvn_ros2/install/setup.bash && python3 -m retargeting.live_capture_ros"
+        },
+        {
+          "name": "retarget",
+          "cwd": "{root}",
+          "delay": 1,
+          "command": "source {home}/miniforge3/etc/profile.d/conda.sh && conda activate tv && python -m retargeting.live_retarget"
         }
       ]
     }

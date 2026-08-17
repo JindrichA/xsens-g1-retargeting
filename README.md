@@ -12,9 +12,10 @@ For reproducible dynamic playback, see
 [`docs/sonic_simulation.md`](docs/sonic_simulation.md). For the measured live
 ROS interface and planned adapter, see [`docs/live_xsens.md`](docs/live_xsens.md).
 
-The immediate development path is recorded Xsens MVNX to G1 retargeting to
-SONIC MuJoCo. Live ROS 2 input will then replace file playback without changing
-the retargeting contract. Physical robot output is deliberately not enabled.
+The recorded Xsens MVNX to G1 to SONIC MuJoCo path is validated. A
+freshness-aware live ROS 2 adapter now implements the same retargeting contract,
+but still needs validation with actual MVN suit traffic and injected network
+failures. Physical robot output is deliberately not enabled.
 
 ## Inspect Recorded Motion
 
@@ -216,11 +217,26 @@ IK inspection:
 
 In the GUI, click `START MUJOCO + SONIC`, wait for `STACK ONLINE` and `Init Done`,
 select a recording, and click `PLAY SELECTED + START CONTROLLER`. Playback arms
-ZMQ automatically, adds a two-second standing prefix, loads the selected
-reference before starting control, and releases MuJoCo's graphical elastic
-support after 1.5 seconds. Double-clicking a recording performs the same action.
+ZMQ automatically, adds a six-second static prefix, loads the selected
+reference before starting control, waits for confirmed `CONTROL`, and retains
+MuJoCo's graphical elastic support for another 0.5 seconds. This avoids letting
+the controller settle against an artificial load and leaves
+roughly 4.5 seconds of unsupported balancing before recorded motion starts.
+Double-clicking a recording
+performs the same action.
+
+The simulation stack uses a local grounded launcher that initializes MuJoCo and
+all automatic fall resets in SONIC's nominal crouched stance. The grounded
+pelvis height is solved from the model's floor contacts, and the elastic support
+anchor is aligned to that height, so releasing it no
+longer drops the robot from the upstream one-metre anchor.
 Do not run `sonic_stream` or `sonic_playlist` while the GUI is open because only
 one publisher can bind loopback port `5556`.
+
+Use `IMPORT MVNX RECORDING` to select an additional `.mvnx` file. The GUI runs
+the standard headless Isaac/Pink export asynchronously, shows progress in
+telemetry, refreshes the recording table, and selects the imported clip when it
+finishes.
 
 For command-line operation, press `ENTER` in the SONIC pane to enable ZMQ, publish
 the reference, press `]` to start control, and send `9` to the graphical MuJoCo
@@ -280,9 +296,18 @@ Python dependencies.
 7. Consider hardware only after simulation acceptance criteria and emergency
    procedures are documented and passed.
 
-The live adapter does not exist yet. Its complete measured input contract,
-process split, operator sequence, and safety checklist are documented in
-[`docs/live_xsens.md`](docs/live_xsens.md).
+The simulation-only live adapter is implemented with source packet freshness,
+an atomic ROS/Pink boundary, explicit calibration and enable states, rolling
+Protocol v1 windows, and a stale-input emergency stop. It still requires live
+suit validation before it can be considered a reliable integration baseline;
+see [`docs/live_xsens.md`](docs/live_xsens.md).
+
+The live Pink process uses the existing `tv` Conda environment. Install its
+headless IK dependency once:
+
+```bash
+~/miniforge3/bin/conda install -n tv -c conda-forge pink -y
+```
 
 The main protocol references are in the sibling SONIC repository:
 
