@@ -10,6 +10,7 @@ from retargeting.sonic_console import (
     StackState,
     discover_recordings,
     import_mvnx_command,
+    load_live_status,
     pack_recording,
     parse_stack_state,
 )
@@ -75,6 +76,16 @@ class SonicConsoleTests(unittest.TestCase):
         )
         self.assertFalse(state.streaming_enabled)
 
+    def test_runtime_output_preserves_initialized_state_after_init_scrolls_out(self):
+        state = parse_stack_state(
+            True,
+            "mujoco:bash:0\nsonic:bash:0\n",
+            "Motion streamed completed and waiting following motion\nLoop timing - LowState age: 2ms\n",
+        )
+        self.assertTrue(state.sonic_initialized)
+        self.assertTrue(state.control_started)
+        self.assertFalse(state.streaming_enabled)
+
     def test_release_support_targets_one_graphical_mujoco_window(self):
         controller = StackController()
         active = StackState(True, True, True, True, True, True, True)
@@ -102,6 +113,13 @@ class SonicConsoleTests(unittest.TestCase):
         self.assertEqual(Path(command[1]).name, "batch_export.py")
         self.assertEqual(command[2:4], ["--input", str(source.resolve())])
         self.assertEqual(command[4], "--output")
+
+    def test_live_status_expires_when_writer_stops(self):
+        status = self.root / "live-status.json"
+        status.write_text('{"state":"ENABLED"}', encoding="utf-8")
+        modified = status.stat().st_mtime
+        self.assertEqual(load_live_status(status, now=modified)["state"], "ENABLED")
+        self.assertEqual(load_live_status(status, now=modified + 1.0)["state"], "OFFLINE")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from retargeting.live_retarget import LiveWatchdog, emergency_stop_sonic
 from retargeting.sonic_console import LivePipelineState, live_next_action
-from retargeting.live_frame import CANONICAL_SEGMENTS, LiveFrame, LiveSegment
+from retargeting.live_frame import CANONICAL_SEGMENTS, LIVE_STALE_MS, LiveFrame, LiveSegment
 
 
 def valid_frame(counter):
@@ -20,6 +20,10 @@ def valid_frame(counter):
 
 
 class LiveWatchdogTests(unittest.TestCase):
+    def test_default_stale_limit_tolerates_measured_stream_jitter(self):
+        watchdog = LiveWatchdog()
+        self.assertEqual(watchdog.stale_seconds * 1000, LIVE_STALE_MS)
+
     def test_duplicate_does_not_refresh_watchdog(self):
         watchdog = LiveWatchdog(stale_seconds=0.15)
         self.assertTrue(watchdog.accept(valid_frame(10), 1_000_000_000))

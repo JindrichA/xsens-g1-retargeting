@@ -12,6 +12,7 @@ from .xsens_skeleton import SEGMENT_EDGES
 
 
 LIVE_FRAME_TOPIC = b"xsens_frame"
+LIVE_STALE_MS = 250.0
 CANONICAL_SEGMENTS = tuple(dict.fromkeys(name for edge in SEGMENT_EDGES for name in edge))
 
 

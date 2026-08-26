@@ -57,9 +57,11 @@ from .sonic_console import (
     StackState,
     discover_recordings,
     import_mvnx_command,
+    load_live_status,
     live_next_action,
     pack_recording,
 )
+from .live_frame import LIVE_STALE_MS
 
 
 BIND_ENDPOINT = "tcp://127.0.0.1:5556"
@@ -126,6 +128,7 @@ class MainWindow(QMainWindow):
         self.live_generation = existing_control.get("calibration_generation", 0)
         self.live_enable_deadline = 0.0
         self.live_publish_baseline = 0
+        self.live_decode_baseline = 0
         self.recordings = discover_recordings(recording_root)
         self.publisher = SonicPublisher()
         self.last_state: StackState | None = None
@@ -350,6 +353,8 @@ class MainWindow(QMainWindow):
         self.live_enable_button.clicked.connect(self.enable_live)
         self.live_disable_button = QPushButton("DISABLE LIVE XSENS")
         self.live_disable_button.clicked.connect(self.disable_live)
+        self.fall_reset_button = QPushButton("RESET AFTER FALL")
+        self.fall_reset_button.clicked.connect(self.reset_after_fall)
         self.live_start_button = QPushButton("START LIVE XSENS PIPELINE")
         self.live_start_button.clicked.connect(self.start_live_pipeline)
         self.live_stop_button = QPushButton("STOP LIVE XSENS PIPELINE")
@@ -359,6 +364,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.live_calibrate_button)
         layout.addWidget(self.live_enable_button)
         layout.addWidget(self.live_disable_button)
+        layout.addWidget(self.fall_reset_button)
 
         isaac_divider = QFrame()
         isaac_divider.setFrameShape(QFrame.Shape.HLine)
@@ -522,10 +528,7 @@ class MainWindow(QMainWindow):
             self._show_error(error)
 
     def _live_status(self) -> dict:
-        try:
-            return json.loads(LIVE_STATUS.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {"state": "OFFLINE"}
+        return load_live_status(LIVE_STATUS)
 
     def _read_live_control(self) -> dict:
         try:
@@ -575,7 +578,11 @@ class MainWindow(QMainWindow):
         if not (pipeline.source_running and pipeline.capture_running and pipeline.retarget_running):
             self._show_error(ConsoleError("the complete live pipeline is not running; complete Step 2 first"))
             return
-        if live.get("state") != "CALIBRATED_DISABLED" or not isinstance(age_ms, (int, float)) or age_ms > 150:
+        if (
+            live.get("state") != "CALIBRATED_DISABLED"
+            or not isinstance(age_ms, (int, float))
+            or age_ms > LIVE_STALE_MS
+        ):
             self._show_error(
                 ConsoleError("fresh calibrated Xsens data is required; restore MVN streaming and calibrate again")
             )
@@ -594,6 +601,32 @@ class MainWindow(QMainWindow):
         write_live_control(self.live_generation, False)
         self._append_log("Live Xsens publication disabled.")
 
+    def reset_after_fall(self) -> None:
+        if QMessageBox.question(
+            self,
+            "Reset after fall",
+            "Stop SONIC and the live pipeline, restart the supported simulation, and require fresh calibration?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        write_live_control(self.live_generation, False)
+        self.queue.clear()
+        self.queue_timer.stop()
+        self.publisher.close()
+        self._append_log("Fall reset requested: publication disabled; restarting supported simulation.")
+        try:
+            self.live_pipeline.stop()
+            self.stack.stop()
+            for path in (Path("/tmp/xsens-live-frame.json"), LIVE_STATUS):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            self._append_log(self.stack.start())
+            self._append_log(self.live_pipeline.start())
+            self._append_log("Reset complete. Wait for Init Done and fresh Xsens data, then calibrate again.")
+        except ConsoleError as error:
+            self._show_error(error)
+
     def _start_live_control(self) -> None:
         try:
             self.stack.start_control()
@@ -610,9 +643,10 @@ class MainWindow(QMainWindow):
             return
         if int(live.get("published_windows", 0)) > self.live_publish_baseline:
             try:
+                self.live_decode_baseline = self.stack.capture_log("sonic", 2000).count("motion name: streamed")
                 self.stack.arm_stream()
-                self._append_log("Live Protocol v1 output confirmed; arming SONIC stream.")
-                QTimer.singleShot(700, self._start_live_control)
+                self._append_log("Live Protocol v1 warmup complete; waiting for SONIC to decode the streamed reference.")
+                QTimer.singleShot(100, self._wait_for_sonic_live_reference)
             except ConsoleError as error:
                 self._show_error(error)
             return
@@ -623,6 +657,23 @@ class MainWindow(QMainWindow):
             )
             return
         QTimer.singleShot(100, self._wait_for_live_output)
+
+    def _wait_for_sonic_live_reference(self) -> None:
+        live = self._live_status()
+        if live.get("state") != "ENABLED":
+            write_live_control(self.live_generation, False)
+            self._show_error(ConsoleError("live Xsens input stopped before SONIC accepted the reference"))
+            return
+        decode_count = self.stack.capture_log("sonic", 2000).count("motion name: streamed")
+        if decode_count > self.live_decode_baseline:
+            self._append_log("SONIC confirmed the streamed reference; starting simulation control.")
+            self._start_live_control()
+            return
+        if time.monotonic() >= self.live_enable_deadline:
+            write_live_control(self.live_generation, False)
+            self._show_error(ConsoleError("SONIC did not decode the live streamed reference; control remains disabled"))
+            return
+        QTimer.singleShot(100, self._wait_for_sonic_live_reference)
 
     def play_selected(self) -> None:
         row = self.recording_table.currentRow()

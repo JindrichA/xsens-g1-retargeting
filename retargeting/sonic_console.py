@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import shutil
 import shlex
 import subprocess
 import sys
+import time
 
 from .sonic_stream import SonicStreamError, load_trajectory, pack_protocol_v1
 
@@ -93,6 +95,18 @@ def import_mvnx_command(source: str | Path, output: str | Path) -> list[str]:
     return [sys.executable, str(ROOT / "batch_export.py"), "--input", str(source), "--output", str(output)]
 
 
+def load_live_status(path: str | Path, max_age_seconds: float = 0.5, now: float | None = None) -> dict:
+    path = Path(path)
+    now = time.time() if now is None else now
+    try:
+        if now - path.stat().st_mtime > max_age_seconds:
+            return {"state": "OFFLINE", "error": "live status is stale"}
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"state": "OFFLINE"}
+    return value if isinstance(value, dict) else {"state": "OFFLINE"}
+
+
 def discover_recordings(root: str | Path) -> list[Recording]:
     root = Path(root).expanduser().resolve()
     recordings = []
@@ -156,13 +170,30 @@ def parse_stack_state(running: bool, panes: str, sonic_log: str, mujoco_log: str
         sonic_log.rfind("ZMQ STREAMING MODE: DISABLED"),
         sonic_log.rfind("ZMQ STREAMING MODE: FORCE DISABLED"),
     )
+    initialized = any(
+        marker in sonic_log
+        for marker in (
+            "Init Done",
+            "Loop timing -",
+            "Motion streamed completed",
+            "ZMQ STREAMING MODE:",
+        )
+    )
+    control_started = any(
+        marker in sonic_log
+        for marker in (
+            "transitioning to CONTROL state",
+            "Loop timing -",
+            "Motion streamed completed",
+        )
+    )
     return StackState(
         session_exists=running,
         running=mujoco_running and sonic_running,
         mujoco_running=mujoco_running,
         sonic_running=sonic_running,
-        sonic_initialized=sonic_running and "Init Done" in sonic_log,
-        control_started=sonic_running and "transitioning to CONTROL state" in sonic_log,
+        sonic_initialized=sonic_running and initialized,
+        control_started=sonic_running and control_started,
         streaming_enabled=sonic_running and enabled_at >= 0 and enabled_at > disabled_at,
     )
 
@@ -179,10 +210,20 @@ class StackController:
             self.environment["TERM"] = "xterm-256color"
             self.environment["TERMINFO"] = str(bundled_terminfo)
             self.environment["TERMINFO_DIRS"] = str(bundled_terminfo)
+        self._session_seen = False
+        self._sonic_initialized = False
+        self._control_started = False
+        self._streaming_enabled = False
+        self._streaming_known = False
 
     def state(self) -> StackState:
         running = self._tmux("has-session", "-t", SESSION_NAME, check=False).returncode == 0
         if not running:
+            self._session_seen = False
+            self._sonic_initialized = False
+            self._control_started = False
+            self._streaming_enabled = False
+            self._streaming_known = False
             return parse_stack_state(False, "", "")
         panes = self._tmux(
             "list-panes",
@@ -194,7 +235,36 @@ class StackController:
         ).stdout
         sonic_log = self.capture_log("sonic", 2000)
         mujoco_log = self.capture_log("mujoco", 2000)
-        return parse_stack_state(True, panes, sonic_log, mujoco_log)
+        state = parse_stack_state(True, panes, sonic_log, mujoco_log)
+        enabled_at = sonic_log.rfind("ZMQ STREAMING MODE: ENABLED")
+        disabled_at = max(
+            sonic_log.rfind("ZMQ STREAMING MODE: DISABLED"),
+            sonic_log.rfind("ZMQ STREAMING MODE: FORCE DISABLED"),
+            sonic_log.rfind("Safety reset: ZMQ streaming disabled"),
+        )
+        if not self._session_seen:
+            self._session_seen = True
+        if "Init Done" in sonic_log and not self._sonic_initialized:
+            self._streaming_known = True
+            self._streaming_enabled = False
+        if state.sonic_initialized:
+            self._sonic_initialized = True
+        if state.control_started:
+            self._control_started = True
+        if enabled_at >= 0 or disabled_at >= 0:
+            self._streaming_known = True
+            self._streaming_enabled = enabled_at > disabled_at
+        if not state.sonic_running:
+            self._sonic_initialized = False
+            self._control_started = False
+            self._streaming_enabled = False
+            self._streaming_known = False
+        return replace(
+            state,
+            sonic_initialized=state.sonic_running and self._sonic_initialized,
+            control_started=state.sonic_running and self._control_started,
+            streaming_enabled=state.sonic_running and self._streaming_enabled,
+        )
 
     def start(self) -> str:
         state = self.state()
@@ -213,6 +283,8 @@ class StackController:
         state = self.state()
         if not state.running or not state.sonic_initialized:
             raise ConsoleError("SONIC must reach 'Init Done' before its stream can be armed")
+        if not self._streaming_known:
+            raise ConsoleError("SONIC streaming mode is unknown; restart SONIC before enabling live control")
         if not state.streaming_enabled:
             self.send_key("sonic", "Enter")
 

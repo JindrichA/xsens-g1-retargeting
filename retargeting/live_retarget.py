@@ -12,13 +12,20 @@ import subprocess
 import sys
 import time
 
-from .live_frame import CANONICAL_SEGMENTS, LiveFrame, LiveFrameError, counter_advanced, decode_live_frame_json
+from .live_frame import (
+    CANONICAL_SEGMENTS,
+    LIVE_STALE_MS,
+    LiveFrame,
+    LiveFrameError,
+    counter_advanced,
+    decode_live_frame_json,
+)
 from .sonic_stream import pack_protocol_v1
 
 
 @dataclass
 class LiveWatchdog:
-    stale_seconds: float = 0.15
+    stale_seconds: float = LIVE_STALE_MS / 1000.0
     last_counter: int | None = None
     last_unique_ns: int = 0
 
@@ -76,13 +83,14 @@ def main(argv=None) -> int:
     parser.add_argument("--input", type=Path, default=Path("/tmp/xsens-live-frame.json"))
     parser.add_argument("--bind", default="tcp://127.0.0.1:5556")
     parser.add_argument("--urdf", type=Path, default=Path.home() / "Projects/unitree_rl_gym/resources/robots/g1_description/g1_29dof.urdf")
-    parser.add_argument("--stale-ms", type=float, default=150.0)
-    parser.add_argument("--window", type=int, default=10)
+    parser.add_argument("--stale-ms", type=float, default=LIVE_STALE_MS)
+    parser.add_argument("--window", type=int, default=100)
+    parser.add_argument("--warmup", type=int, default=50)
     parser.add_argument("--control", type=Path, default=Path("/tmp/xsens-live-control.json"))
     parser.add_argument("--status", type=Path, default=Path("/tmp/xsens-live-status.json"))
     args = parser.parse_args(argv)
-    if args.stale_ms <= 0 or args.window < 2:
-        parser.error("stale-ms must be positive and window must be at least 2")
+    if args.stale_ms <= 0 or args.warmup < 2 or args.window < args.warmup:
+        parser.error("stale-ms must be positive and window must be at least warmup >= 2")
     try:
         import zmq
         from .g1_retargeter import G1Retargeter, mvnx_from_live
@@ -96,7 +104,9 @@ def main(argv=None) -> int:
     socket.bind(args.bind)
     watchdog = LiveWatchdog(args.stale_ms / 1000.0)
     retargeter = None
-    calibrated_generation = 0
+    # A process restart must not reinterpret a persisted request as a new
+    # calibration. The operator must increment the generation explicitly.
+    calibrated_generation = read_control(args.control)["calibration_generation"]
     stale_stop_sent = False
     frame_index = 0
     published_windows = 0
@@ -125,6 +135,9 @@ def main(argv=None) -> int:
                 age_ms = live.age_seconds(now_ns) * 1000
                 if age_ms > args.stale_ms:
                     raise LiveFrameError(f"capture snapshot is stale ({age_ms:.0f} ms)")
+                state = (
+                    "ENABLED" if control["enabled"] else "CALIBRATED_DISABLED"
+                ) if retargeter is not None else "WAITING_FOR_CALIBRATION"
                 if watchdog.accept(live, now_ns):
                     stale_stop_sent = False
                     frame = mvnx_from_live(live, frame_index)
@@ -136,7 +149,6 @@ def main(argv=None) -> int:
                         quaternions.clear()
                         print(f"Calibrated generation {calibrated_generation}", flush=True)
                     if retargeter is not None:
-                        state = "ENABLED" if control["enabled"] else "CALIBRATED_DISABLED"
                         if control["enabled"]:
                             joint_pos, joint_vel = retargeter.solve(frame)
                             positions.append(joint_pos)
@@ -145,7 +157,7 @@ def main(argv=None) -> int:
                             positions = positions[-args.window :]
                             velocities = velocities[-args.window :]
                             quaternions = quaternions[-args.window :]
-                            if len(positions) >= 2:
+                            if len(positions) >= args.warmup:
                                 indexes = list(range(frame_index - len(positions) + 1, frame_index + 1))
                                 socket.send(
                                     pack_protocol_v1(
@@ -181,6 +193,7 @@ def main(argv=None) -> int:
                 calibrated_generation=calibrated_generation,
                 enabled=control["enabled"],
                 published_windows=published_windows,
+                buffered_frames=len(positions),
                 last_publish_steady_ns=last_publish_steady_ns,
             )
             time.sleep(max(0.0, 0.02 - (time.monotonic() - started)))

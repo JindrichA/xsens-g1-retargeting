@@ -8,7 +8,7 @@ implemented. Live suit validation is still pending; keep this simulation-only.
 
 This manual documents the measured live input contract, process layout,
 operator procedure, and safety requirements. The adapter uses explicit
-calibration and enable controls plus a `150 ms` unique-source watchdog. A stale
+calibration and enable controls plus a `250 ms` unique-source watchdog. A stale
 stream requests SONIC emergency stop and requires new calibration before resume.
 
 Real-robot output is outside the scope of this manual. Keep SONIC on its
@@ -249,7 +249,7 @@ Launch the PyQt console and use this procedure:
 
 The GUI displays these steps as a live next-action panel. `ENABLE LIVE XSENS`
 is accepted only when the complete pipeline is running, the current state is
-`CALIBRATED_DISABLED`, and frame age is below `150 ms`. It then waits for a
+`CALIBRATED_DISABLED`, and frame age is below `250 ms`. It then waits for a
 confirmed rolling Protocol v1 window before arming or starting SONIC. If no
 window appears within five seconds, control remains disabled and the GUI reports
 an actionable error.
@@ -289,7 +289,7 @@ Inject frozen, delayed, duplicated, reordered, and dropped frames in unit tests.
 Tests must not launch ROS, MuJoCo, Isaac Sim, or the controller.
 
 The implemented watchdog rejects repeated and backward source counters, handles
-uint32 wraparound, and requests SONIC stop after `150 ms` without a unique frame.
+uint32 wraparound, and requests SONIC stop after `250 ms` without a unique frame.
 After a stale stop, incrementing the calibration generation is required before
 live output resumes.
 
