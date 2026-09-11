@@ -237,7 +237,7 @@ Launch the PyQt console and use this procedure:
 ```
 
 1. Start SONIC MuJoCo and keep the elastic support enabled.
-2. Click `START LIVE XSENS PIPELINE`; it starts the ROS source, atomic capture,
+2. Click `START LIVE SUIT PIPELINE`; it starts the ROS source, atomic capture,
    and headless Pink process.
 3. Stand upright in a documented neutral pose.
 4. Wait for `LIVE WAITING_FOR_CALIBRATION`.
@@ -254,6 +254,14 @@ confirmed rolling Protocol v1 window before arming or starting SONIC. If no
 window appears within five seconds, control remains disabled and the GUI reports
 an actionable error.
 
+The header identifies exactly one requested input mode: `RECORDED PLAYBACK`,
+`LIVE SUIT`, or `MOCK SIMULATION`. The control deck keeps the current phase and
+wait reason visible, with countdown feedback during bounded warmup, decode, and
+controller-start waits. Recorded playback is blocked while any live or mock
+pipeline session exists; stop that pipeline before switching back. Switching,
+stopping, resetting, disabling, or using emergency stop invalidates delayed GUI
+callbacks so an earlier action cannot start control afterward.
+
 The underlying commands are:
 
 ```text
@@ -264,6 +272,35 @@ conda run -n tv python -m retargeting.live_retarget
 `retargeting.live_retarget` owns `tcp://127.0.0.1:5556` while running. Stop the
 live pipeline before playing recorded clips from the GUI. Recorded and live
 publishers are intentionally mutually exclusive.
+
+## Mock Streaming Without a Suit
+
+Select a recording in the GUI and click `START MOCK SIMULATION FROM SELECTED`.
+This starts an MVNX replay process and the normal Pink live retargeter without
+launching ROS or opening an Xsens UDP port. The replay writes the same atomic
+`/tmp/xsens-live-frame.json` snapshots as the ROS capture process at 50 Hz and
+loops at the end of the recording. While output is disabled, it holds the first
+frame so calibration is deterministic. After enable, it keeps that frame for
+three seconds to cover the live-reference warmup and supported controller
+startup before advancing through the recording.
+
+The mock path deliberately preserves the normal safety sequence: start SONIC
+MuJoCo, wait for `LIVE WAITING_FOR_CALIBRATION`, click `CALIBRATE LIVE NEUTRAL`,
+and only then click `ENABLE LIVE XSENS`. SONIC control starts only after the
+50-frame warmup and confirmation that SONIC decoded `motion name: streamed`.
+`RESET AFTER FALL` restarts the same mock recording and requires calibration
+again.
+
+The standalone source can also be run without the GUI:
+
+```bash
+python3 -m retargeting.mock_live_stream \
+  "xsens_TJ_08072026/MVNX export/Bending forward.mvnx" \
+  --loop
+```
+
+This command only produces live-frame snapshots. It does not start SONIC,
+MuJoCo, the retargeter, or any hardware output.
 
 ## Watchdog and Fail-Safe Requirements
 

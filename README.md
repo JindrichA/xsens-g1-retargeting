@@ -302,6 +302,12 @@ Protocol v1 windows, and a stale-input emergency stop. It still requires live
 suit validation before it can be considered a reliable integration baseline;
 see [`docs/live_xsens.md`](docs/live_xsens.md).
 
+For device-free tuning, select an exported recording in the SONIC GUI and click
+`START MOCK SIMULATION FROM SELECTED`. It replays the source MVNX through the
+exact live atomic-file and Pink retargeting path without ROS or an Xsens
+connection. The normal calibration, warmup, SONIC confirmation, watchdog, and
+fall-reset safety steps still apply.
+
 The live Pink process uses the existing `tv` Conda environment. Install its
 headless IK dependency once:
 

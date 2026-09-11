@@ -66,15 +66,73 @@ class LivePipelineState:
     source_running: bool
     capture_running: bool
     retarget_running: bool
+    mock_running: bool = False
+
+
+@dataclass(frozen=True)
+class OperationStatus:
+    mode: str
+    phase: str
+    detail: str
+    active: bool = False
+
+
+def derive_operation_status(
+    stack: StackState,
+    pipeline: LivePipelineState,
+    live: dict,
+    requested_mode: str = "RECORDED PLAYBACK",
+) -> OperationStatus:
+    if pipeline.mock_running:
+        mode = "MOCK SIMULATION"
+    elif pipeline.session_exists:
+        mode = "LIVE SUIT"
+    else:
+        mode = requested_mode
+
+    if not stack.session_exists:
+        return OperationStatus(mode, "STACK OFFLINE", "Start MuJoCo + SONIC to begin.")
+    if not stack.running:
+        return OperationStatus(mode, "STACK DEGRADED", "One or more simulation processes stopped.")
+    if not stack.sonic_initialized:
+        return OperationStatus(mode, "SONIC STARTING", "Waiting for SONIC Init Done.")
+
+    if mode == "RECORDED PLAYBACK":
+        if stack.control_started:
+            return OperationStatus(
+                mode,
+                "CONTROL ACKNOWLEDGED",
+                "The captured SONIC log contains a control-start acknowledgement.",
+                True,
+            )
+        if stack.streaming_enabled:
+            return OperationStatus(mode, "READY TO PLAY", "Select and publish a recorded reference.")
+        return OperationStatus(mode, "READY TO ARM", "Arm the recorded stream before playback.")
+
+    if not (pipeline.source_running and pipeline.capture_running and pipeline.retarget_running):
+        return OperationStatus(mode, "PIPELINE STARTING", "Waiting for all input and retarget processes.")
+    live_state = live.get("state", "OFFLINE")
+    phases = {
+        "OFFLINE": ("WAITING FOR DATA", "No fresh input status has arrived."),
+        "NO_DATA": ("WAITING FOR DATA", "The source has not produced a complete frame."),
+        "WAITING_FOR_CALIBRATION": ("CALIBRATION REQUIRED", "Hold a neutral upright pose, then calibrate."),
+        "CALIBRATED_DISABLED": ("READY TO ENABLE", "Calibration is current; dynamic output remains disabled."),
+        "ENABLED": ("STREAMING ACTIVE", "Fresh bounded references are being published."),
+        "STALE": ("STALE STOP", "Input freshness was lost; new calibration is required."),
+    }
+    phase, detail = phases.get(live_state, (live_state, "Inspect live status and process logs."))
+    return OperationStatus(mode, phase, detail, live_state == "ENABLED")
 
 
 def live_next_action(sonic_initialized: bool, pipeline: LivePipelineState, live: dict) -> str:
     if not sonic_initialized:
         return "STEP 1 / Click START MUJOCO + SONIC, then wait for Init Done."
     if not (pipeline.source_running and pipeline.capture_running and pipeline.retarget_running):
-        return "STEP 2 / Start MVN Studio streaming, then click START LIVE XSENS PIPELINE."
+        return "STEP 2 / Start MVN Studio streaming, then click START LIVE SUIT PIPELINE."
     state = live.get("state", "OFFLINE")
     if state in {"OFFLINE", "NO_DATA"}:
+        if pipeline.mock_running:
+            return "WAITING / Mock replay has not produced a frame; inspect the mock tmux log."
         return "WAITING / No Xsens frames. In MVN Studio stream to this workstation on UDP 9763."
     if state == "STALE":
         return "STOPPED / Xsens frames became stale. Restore MVN streaming, then calibrate again."
@@ -83,6 +141,8 @@ def live_next_action(sonic_initialized: bool, pipeline: LivePipelineState, live:
     if state == "CALIBRATED_DISABLED":
         return "STEP 4 / Calibration is ready. Click ENABLE LIVE XSENS."
     if state == "ENABLED":
+        if pipeline.mock_running:
+            return "MOCK ACTIVE / MVNX replay is driving SONIC simulation. Stale input stops SONIC automatically."
         return "LIVE ACTIVE / Keep MVN streaming. Stale input stops SONIC automatically."
     return f"LIVE STATUS / {state}"
 
@@ -434,7 +494,7 @@ class IsaacController:
 
 
 class LivePipelineController:
-    """Supervise the ROS capture and Pink live-retarget processes."""
+    """Supervise real or mock Xsens input and Pink live retargeting."""
 
     def __init__(self) -> None:
         self.commands = StackController()
@@ -450,11 +510,14 @@ class LivePipelineController:
         source_log = self._log("source")
         capture_log = self._log("capture")
         retarget_log = self._log("retarget")
+        mock_log = self._log("mock")
+        mock_running = "mock:0" in panes and "[live] process exited" not in mock_log
         return LivePipelineState(
             True,
-            "source:0" in panes and "[live] process exited" not in source_log,
-            "capture:0" in panes and "[live] process exited" not in capture_log,
+            mock_running or ("source:0" in panes and "[live] process exited" not in source_log),
+            mock_running or ("capture:0" in panes and "[live] process exited" not in capture_log),
             "retarget:0" in panes and "[live] process exited" not in retarget_log,
+            mock_running,
         )
 
     def start(self) -> str:
@@ -497,6 +560,37 @@ class LivePipelineController:
             self.commands._tmux("kill-session", "-t", LIVE_SESSION_NAME, check=False)
             raise
         return "Started Xsens ROS source, live capture, and retargeting pipeline"
+
+    def start_mock(self, source: str | Path) -> str:
+        source = Path(source).expanduser().resolve()
+        if not source.is_file():
+            raise ConsoleError(f"mock source MVNX is unavailable: {source}")
+        if self.state().session_exists:
+            self.stop()
+        mock_command = (
+            f"cd {shlex.quote(str(ROOT))} && "
+            f"{shlex.quote(sys.executable)} -m retargeting.mock_live_stream "
+            f"{shlex.quote(str(source))} --loop --control-gated; "
+            "rc=$?; printf '\n[live] process exited with status %s\n' \"$rc\"; exec bash"
+        )
+        retarget_command = (
+            f"cd {shlex.quote(str(ROOT))} && source {shlex.quote(str(Path.home() / 'miniforge3/etc/profile.d/conda.sh'))} && "
+            "conda activate tv && python -m retargeting.live_retarget; "
+            "rc=$?; printf '\n[live] process exited with status %s\n' \"$rc\"; exec bash"
+        )
+        self.commands._tmux(
+            "new-session", "-d", "-s", LIVE_SESSION_NAME, "-n", "mock",
+            "bash", "-lc", mock_command,
+        )
+        try:
+            self.commands._tmux(
+                "new-window", "-t", LIVE_SESSION_NAME, "-n", "retarget",
+                "bash", "-lc", retarget_command,
+            )
+        except Exception:
+            self.commands._tmux("kill-session", "-t", LIVE_SESSION_NAME, check=False)
+            raise
+        return f"Started mock Xsens replay from {source.name} and live retargeting"
 
     def stop(self) -> str:
         if not self.state().session_exists:

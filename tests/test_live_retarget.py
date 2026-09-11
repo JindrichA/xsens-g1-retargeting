@@ -52,6 +52,11 @@ class LiveWatchdogTests(unittest.TestCase):
         self.assertIn("STEP 4", live_next_action(True, running, {"state": "CALIBRATED_DISABLED"}))
         self.assertIn("STOPPED", live_next_action(True, running, {"state": "STALE"}))
 
+    def test_live_guide_identifies_mock_playback(self):
+        mock = LivePipelineState(True, True, True, True, True)
+        self.assertIn("Mock replay", live_next_action(True, mock, {"state": "NO_DATA"}))
+        self.assertIn("MOCK ACTIVE", live_next_action(True, mock, {"state": "ENABLED"}))
+
 
 if __name__ == "__main__":
     unittest.main()

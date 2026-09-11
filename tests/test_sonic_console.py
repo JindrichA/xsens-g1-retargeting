@@ -6,8 +6,10 @@ from unittest.mock import patch
 
 from retargeting.sonic_console import (
     ConsoleError,
+    LivePipelineState,
     StackController,
     StackState,
+    derive_operation_status,
     discover_recordings,
     import_mvnx_command,
     load_live_status,
@@ -120,6 +122,26 @@ class SonicConsoleTests(unittest.TestCase):
         modified = status.stat().st_mtime
         self.assertEqual(load_live_status(status, now=modified)["state"], "ENABLED")
         self.assertEqual(load_live_status(status, now=modified + 1.0)["state"], "OFFLINE")
+
+    def test_operation_status_distinguishes_live_and_mock_modes(self):
+        stack = StackState(True, True, True, True, True, False, False)
+        live = LivePipelineState(True, True, True, True)
+        mock = LivePipelineState(True, True, True, True, True)
+        self.assertEqual(
+            derive_operation_status(stack, live, {"state": "WAITING_FOR_CALIBRATION"}).mode,
+            "LIVE SUIT",
+        )
+        status = derive_operation_status(stack, mock, {"state": "ENABLED"})
+        self.assertEqual(status.mode, "MOCK SIMULATION")
+        self.assertEqual(status.phase, "STREAMING ACTIVE")
+        self.assertTrue(status.active)
+
+    def test_operation_status_reports_recorded_readiness(self):
+        stack = StackState(True, True, True, True, True, False, True)
+        stopped = LivePipelineState(False, False, False, False)
+        status = derive_operation_status(stack, stopped, {})
+        self.assertEqual(status.mode, "RECORDED PLAYBACK")
+        self.assertEqual(status.phase, "READY TO PLAY")
 
 
 if __name__ == "__main__":

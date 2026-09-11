@@ -55,6 +55,7 @@ from .sonic_console import (
     Recording,
     StackController,
     StackState,
+    derive_operation_status,
     discover_recordings,
     import_mvnx_command,
     load_live_status,
@@ -124,6 +125,12 @@ class MainWindow(QMainWindow):
         self.stack = StackController()
         self.isaac = IsaacController()
         self.live_pipeline = LivePipelineController()
+        self.mock_source: Path | None = None
+        self.requested_mode = "RECORDED PLAYBACK"
+        self.transition_generation = 0
+        self.operation_stage: tuple[str, str] | None = None
+        self.operation_started_at = 0.0
+        self.operation_deadline = 0.0
         existing_control = self._read_live_control()
         self.live_generation = existing_control.get("calibration_generation", 0)
         self.live_enable_deadline = 0.0
@@ -188,6 +195,9 @@ class MainWindow(QMainWindow):
         self.isaac_badge.setObjectName("badge")
         self.live_badge = QLabel("LIVE OFFLINE")
         self.live_badge.setObjectName("badge")
+        self.mode_badge = QLabel("MODE / RECORDED PLAYBACK")
+        self.mode_badge.setObjectName("modeBadge")
+        header.addWidget(self.mode_badge)
         header.addWidget(self.stack_badge)
         header.addWidget(self.control_badge)
         header.addWidget(self.stream_badge)
@@ -308,6 +318,19 @@ class MainWindow(QMainWindow):
     def _build_control_panel(self) -> QFrame:
         panel, layout = self._panel("CONTROL DECK", "Stack lifecycle and controller-driven playback")
 
+        self.operation_phase = QLabel("STACK OFFLINE")
+        self.operation_phase.setObjectName("operationPhase")
+        self.operation_detail = QLabel("Start MuJoCo + SONIC to begin.")
+        self.operation_detail.setObjectName("caption")
+        self.operation_detail.setWordWrap(True)
+        self.operation_progress = QProgressBar()
+        self.operation_progress.setRange(0, 1000)
+        self.operation_progress.setValue(0)
+        self.operation_progress.setTextVisible(False)
+        layout.addWidget(self.operation_phase)
+        layout.addWidget(self.operation_detail)
+        layout.addWidget(self.operation_progress)
+
         self.start_button = QPushButton("START MUJOCO + SONIC")
         self.start_button.setObjectName("primary")
         self.start_button.clicked.connect(self.start_stack)
@@ -357,9 +380,12 @@ class MainWindow(QMainWindow):
         self.fall_reset_button.clicked.connect(self.reset_after_fall)
         self.live_start_button = QPushButton("START LIVE XSENS PIPELINE")
         self.live_start_button.clicked.connect(self.start_live_pipeline)
+        self.mock_start_button = QPushButton("START MOCK FROM SELECTED")
+        self.mock_start_button.clicked.connect(self.start_mock_pipeline)
         self.live_stop_button = QPushButton("STOP LIVE XSENS PIPELINE")
         self.live_stop_button.clicked.connect(self.stop_live_pipeline)
         layout.addWidget(self.live_start_button)
+        layout.addWidget(self.mock_start_button)
         layout.addWidget(self.live_stop_button)
         layout.addWidget(self.live_calibrate_button)
         layout.addWidget(self.live_enable_button)
@@ -418,6 +444,7 @@ class MainWindow(QMainWindow):
             #panel { background: #171e22; border: 1px solid #29343a; border-radius: 4px; }
             #panelTitle { color: #f0f4f5; font-size: 15px; font-weight: 700; letter-spacing: 1px; }
             #badge { background: #202a2f; border: 1px solid #344249; border-radius: 3px; color: #87999f; padding: 7px 10px; font-size: 10px; font-weight: 700; }
+            #modeBadge { background: #332b18; border: 1px solid #80692d; border-radius: 3px; color: #f2c966; padding: 7px 10px; font-size: 10px; font-weight: 800; }
             QPushButton { background: #222d32; border: 1px solid #3a484e; border-radius: 3px; padding: 10px; font-weight: 700; text-align: left; }
             QPushButton:hover { background: #2b383e; border-color: #5a6b72; }
             QPushButton:disabled { color: #59666b; background: #192024; border-color: #273137; }
@@ -430,6 +457,7 @@ class MainWindow(QMainWindow):
             QTableWidget::item { padding: 7px; border-bottom: 1px solid #1d262b; }
             #nowPlaying { color: #f1f5f6; border-left: 3px solid #f2b84b; padding: 8px 10px; font-weight: 700; }
             #liveGuide { color: #dffbff; background: #173039; border-left: 3px solid #50c8ce; padding: 9px 10px; font-weight: 700; }
+            #operationPhase { color: #f2c966; font-size: 13px; font-weight: 800; letter-spacing: 1px; }
             #mono { color: #91a4aa; font-family: DejaVu Sans Mono, monospace; }
             QProgressBar { height: 8px; background: #0c1114; border: 1px solid #29343a; border-radius: 2px; text-align: center; color: transparent; }
             QProgressBar::chunk { background: #f2b84b; }
@@ -444,11 +472,7 @@ class MainWindow(QMainWindow):
             self.last_state = state
             stack_text = "STACK ONLINE" if state.running else "STACK DEGRADED" if state.session_exists else "STACK OFFLINE"
             self._set_badge(self.stack_badge, stack_text, state.running)
-            self._set_badge(
-                self.control_badge,
-                "CONTROL ACTIVE" if state.control_started else "CONTROL IDLE",
-                state.control_started,
-            )
+            self._set_badge(self.control_badge, "CONTROL ACKNOWLEDGED" if state.control_started else "CONTROL IDLE", state.control_started)
             self._set_badge(
                 self.stream_badge,
                 "STREAM ENABLED" if state.streaming_enabled else "STREAM OFFLINE",
@@ -456,11 +480,24 @@ class MainWindow(QMainWindow):
             )
             self.start_button.setEnabled(not state.running)
             self.stop_stack_button.setEnabled(state.session_exists)
-            self.enable_button.setEnabled(state.sonic_initialized and not state.streaming_enabled)
-            self.enable_button.setText("RECORDED STREAM ARMED" if state.streaming_enabled else "ARM RECORDED XSENS STREAM")
             live_pipeline = self.live_pipeline.state()
-            self.play_button.setEnabled(state.sonic_initialized and not live_pipeline.retarget_running)
-            self.all_button.setEnabled(state.sonic_initialized and not self.queue and not live_pipeline.retarget_running)
+            recorded_available = not live_pipeline.session_exists
+            self.enable_button.setEnabled(state.sonic_initialized and not state.streaming_enabled and recorded_available)
+            self.enable_button.setText("RECORDED STREAM ARMED" if state.streaming_enabled and recorded_available else "ARM RECORDED XSENS STREAM")
+            self.enable_button.setToolTip(
+                "Stop the live or mock pipeline before arming recorded playback."
+                if not recorded_available else "Enable SONIC's local recorded-reference stream."
+            )
+            self.play_button.setEnabled(state.sonic_initialized and recorded_available)
+            self.play_button.setToolTip(
+                "Stop the live or mock pipeline before recorded playback."
+                if not recorded_available else "Publish the selected reference and start SONIC control."
+            )
+            self.all_button.setEnabled(state.sonic_initialized and not self.queue and recorded_available)
+            self.all_button.setToolTip(
+                "Stop the live or mock pipeline before recorded playback."
+                if not recorded_available else "Play every validated reference from the selected row."
+            )
             isaac_state = self.isaac.state()
             self.isaac_running = isaac_state.running
             self._set_badge(
@@ -472,13 +509,48 @@ class MainWindow(QMainWindow):
             live = self._live_status()
             live_state = live.get("state", "OFFLINE")
             live_active = live_state == "ENABLED"
-            self._set_badge(self.live_badge, f"LIVE {live_state}", live_active)
+            operation = derive_operation_status(state, live_pipeline, live, self.requested_mode)
+            self.mode_badge.setText(f"MODE / {operation.mode}")
+            source_label = "MOCK" if operation.mode == "MOCK SIMULATION" else "LIVE"
+            self._set_badge(self.live_badge, f"{source_label} {live_state}", live_active)
+            if live_state == "STALE":
+                self._set_badge(self.control_badge, "CONTROL STOP REQUESTED", False)
+            if self.operation_stage is not None:
+                stage = self.operation_stage[0]
+                pipeline_ready = (
+                    live_pipeline.source_running
+                    and live_pipeline.capture_running
+                    and live_pipeline.retarget_running
+                )
+                if stage == "SONIC STARTING" and state.sonic_initialized:
+                    self._clear_operation_stage()
+                elif stage.endswith("PIPELINE STARTING") and pipeline_ready and live_state != "OFFLINE":
+                    self._clear_operation_stage()
+                elif stage == "CALIBRATING" and live_state == "CALIBRATED_DISABLED":
+                    self._clear_operation_stage()
+            if self.operation_stage is None:
+                self.operation_phase.setText(operation.phase)
+                self.operation_detail.setText(operation.detail)
             self.live_calibrate_button.setEnabled(state.sonic_initialized and live_state not in {"OFFLINE", "NO_DATA"})
             self.live_enable_button.setEnabled(live_state == "CALIBRATED_DISABLED")
             self.live_disable_button.setEnabled(live_active)
+            self.live_calibrate_button.setToolTip(
+                "Requires initialized SONIC and fresh complete input frames."
+                if not self.live_calibrate_button.isEnabled() else "Capture the current upright pose as neutral."
+            )
+            self.live_enable_button.setToolTip(
+                "Requires fresh input and an accepted neutral calibration."
+                if not self.live_enable_button.isEnabled() else "Begin bounded publication after warmup and SONIC acknowledgement."
+            )
             self.live_start_button.setEnabled(
                 not (live_pipeline.source_running and live_pipeline.capture_running and live_pipeline.retarget_running)
+                or live_pipeline.mock_running
             )
+            self.live_start_button.setText("SWITCH TO LIVE SUIT" if live_pipeline.mock_running else "START LIVE SUIT PIPELINE")
+            self.live_start_button.setToolTip("Starts the ROS 2 Xsens source; requires MVN Studio UDP streaming.")
+            self.mock_start_button.setEnabled(not live_pipeline.mock_running)
+            self.mock_start_button.setText("MOCK SIMULATION RUNNING" if live_pipeline.mock_running else "START MOCK SIMULATION FROM SELECTED")
+            self.mock_start_button.setToolTip("Uses the selected recording as suit input; no ROS or Xsens hardware.")
             self.live_stop_button.setEnabled(live_pipeline.session_exists)
             self.live_guide.setText(live_next_action(state.sonic_initialized, live_pipeline, live))
             if state.running:
@@ -496,9 +568,48 @@ class MainWindow(QMainWindow):
             else "color: #87999f; border-color: #344249; background: #202a2f;"
         )
 
+    def _select_mode(self, mode: str) -> None:
+        self.cancel_queue()
+        self._cancel_pending_transitions()
+        self.publisher.close()
+        self.current_recording = None
+        self.now_playing.setText("No reference published")
+        self.progress.setValue(0)
+        self.time_label.setText("00:00 / 00:00")
+        self.requested_mode = mode
+
+    def _schedule_transition(self, delay_ms: int, callback) -> None:
+        generation = self.transition_generation
+
+        def run_if_current() -> None:
+            if generation == self.transition_generation:
+                callback()
+
+        QTimer.singleShot(delay_ms, run_if_current)
+
+    def _set_operation_stage(self, phase: str, detail: str, duration: float = 0.0) -> None:
+        self.operation_stage = (phase, detail)
+        self.operation_started_at = time.monotonic()
+        self.operation_deadline = self.operation_started_at + duration if duration > 0 else 0.0
+        self.operation_phase.setText(phase)
+        self.operation_detail.setText(detail)
+        self._refresh_operation_progress()
+
+    def _clear_operation_stage(self) -> None:
+        self.operation_stage = None
+        self.operation_started_at = 0.0
+        self.operation_deadline = 0.0
+        self.operation_progress.setRange(0, 1000)
+        self.operation_progress.setValue(0)
+
+    def _cancel_pending_transitions(self) -> None:
+        self.transition_generation += 1
+        self._clear_operation_stage()
+
     def start_stack(self) -> None:
         try:
             self._append_log(self.stack.start())
+            self._set_operation_stage("SONIC STARTING", "Waiting for MuJoCo and SONIC Init Done.")
             self._append_log("MuJoCo viewer is launching. Wait for SONIC 'Init Done', then enable the controller.")
             self.refresh_status()
         except ConsoleError as error:
@@ -508,6 +619,7 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Stop simulation", "Stop MuJoCo and the SONIC controller?") != QMessageBox.StandardButton.Yes:
             return
         self.cancel_queue()
+        self._cancel_pending_transitions()
         try:
             self._append_log(self.stack.stop())
             self.current_recording = None
@@ -516,14 +628,18 @@ class MainWindow(QMainWindow):
             self._show_error(error)
 
     def arm_stream(self) -> None:
+        if self.live_pipeline.state().session_exists:
+            self._show_error(ConsoleError("stop the live or mock pipeline before arming recorded playback"))
+            return
         try:
+            self.requested_mode = "RECORDED PLAYBACK"
             self.stack.arm_stream()
             self._append_log(
                 "Recorded stream armed. The robot remains on elastic support until a clip is published. "
                 "Select a clip and press PLAY SELECTED + START CONTROLLER."
             )
             self.now_playing.setText("WAITING ON ELASTIC SUPPORT / SELECT A RECORDING")
-            QTimer.singleShot(1200, self.refresh_status)
+            self._schedule_transition(1200, self.refresh_status)
         except ConsoleError as error:
             self._show_error(error)
 
@@ -545,10 +661,13 @@ class MainWindow(QMainWindow):
             return
         self.live_generation += 1
         write_live_control(self.live_generation, False)
+        self._set_operation_stage("CALIBRATING", "Waiting for the neutral pose to be accepted.")
         self._append_log(f"Live neutral calibration requested: generation {self.live_generation}.")
 
     def start_live_pipeline(self) -> None:
         try:
+            self._select_mode("LIVE SUIT")
+            self.mock_source = None
             self.publisher.close()
             write_live_control(self.live_generation, False)
             for path in (Path("/tmp/xsens-live-frame.json"), LIVE_STATUS):
@@ -557,13 +676,43 @@ class MainWindow(QMainWindow):
                 except FileNotFoundError:
                     pass
             self._append_log(self.live_pipeline.start())
+            self._set_operation_stage("LIVE PIPELINE STARTING", "Waiting for ROS capture and Pink retargeting.")
+            self.refresh_status()
+        except ConsoleError as error:
+            self._show_error(error)
+
+    def start_mock_pipeline(self) -> None:
+        row = self.recording_table.currentRow()
+        if row < 0:
+            self._show_error(ConsoleError("select a recording to use as the mock stream"))
+            return
+        recording = self.recordings[row]
+        if recording.source is None or not recording.source.is_file():
+            self._show_error(ConsoleError(f"source MVNX is unavailable for {recording.name}"))
+            return
+        try:
+            self._select_mode("MOCK SIMULATION")
+            self.mock_source = recording.source
+            self.publisher.close()
+            write_live_control(self.live_generation, False)
+            for path in (Path("/tmp/xsens-live-frame.json"), LIVE_STATUS):
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+            self._append_log(self.live_pipeline.start_mock(recording.source))
+            self._set_operation_stage("MOCK PIPELINE STARTING", "Waiting for replay frames and Pink retargeting.")
+            self.refresh_status()
         except ConsoleError as error:
             self._show_error(error)
 
     def stop_live_pipeline(self) -> None:
         write_live_control(self.live_generation, False)
+        self._cancel_pending_transitions()
         try:
             self._append_log(self.live_pipeline.stop())
+            self.requested_mode = "RECORDED PLAYBACK"
+            self.refresh_status()
         except ConsoleError as error:
             self._show_error(error)
 
@@ -591,14 +740,20 @@ class MainWindow(QMainWindow):
             self.publisher.close()
             self.live_publish_baseline = int(live.get("published_windows", 0))
             self.live_enable_deadline = time.monotonic() + 5.0
+            self._set_operation_stage(
+                "LIVE WARMUP",
+                "Waiting for a complete rolling Protocol v1 reference window.",
+                5.0,
+            )
             write_live_control(self.live_generation, True)
             self._append_log("Live enable requested; waiting for confirmed SONIC reference windows.")
-            QTimer.singleShot(100, self._wait_for_live_output)
+            self._schedule_transition(100, self._wait_for_live_output)
         except ConsoleError as error:
             self._show_error(error)
 
     def disable_live(self) -> None:
         write_live_control(self.live_generation, False)
+        self._cancel_pending_transitions()
         self._append_log("Live Xsens publication disabled.")
 
     def reset_after_fall(self) -> None:
@@ -609,6 +764,7 @@ class MainWindow(QMainWindow):
         ) != QMessageBox.StandardButton.Yes:
             return
         write_live_control(self.live_generation, False)
+        self._cancel_pending_transitions()
         self.queue.clear()
         self.queue_timer.stop()
         self.publisher.close()
@@ -622,15 +778,20 @@ class MainWindow(QMainWindow):
                 except FileNotFoundError:
                     pass
             self._append_log(self.stack.start())
-            self._append_log(self.live_pipeline.start())
+            if self.mock_source is None:
+                self._append_log(self.live_pipeline.start())
+            else:
+                self._append_log(self.live_pipeline.start_mock(self.mock_source))
             self._append_log("Reset complete. Wait for Init Done and fresh Xsens data, then calibrate again.")
+            self._set_operation_stage("RESETTING SIMULATION", "Waiting for supported simulation and fresh input.")
         except ConsoleError as error:
             self._show_error(error)
 
     def _start_live_control(self) -> None:
         try:
             self.stack.start_control()
-            QTimer.singleShot(1500, self._release_support)
+            self._set_operation_stage("CONTROL STABILIZING", "SONIC accepted the stream; support remains enabled briefly.", 1.5)
+            self._schedule_transition(1500, self._release_support)
             self._append_log("Live SONIC control started; support releases after stabilization.")
         except ConsoleError as error:
             self._show_error(error)
@@ -645,8 +806,9 @@ class MainWindow(QMainWindow):
             try:
                 self.live_decode_baseline = self.stack.capture_log("sonic", 2000).count("motion name: streamed")
                 self.stack.arm_stream()
+                self._set_operation_stage("SONIC DECODING", "Waiting for SONIC to acknowledge motion name: streamed.", max(0.1, self.live_enable_deadline - time.monotonic()))
                 self._append_log("Live Protocol v1 warmup complete; waiting for SONIC to decode the streamed reference.")
-                QTimer.singleShot(100, self._wait_for_sonic_live_reference)
+                self._schedule_transition(100, self._wait_for_sonic_live_reference)
             except ConsoleError as error:
                 self._show_error(error)
             return
@@ -656,7 +818,7 @@ class MainWindow(QMainWindow):
                 ConsoleError("no live SONIC reference was produced within 5 seconds; check MVN streaming and recalibrate")
             )
             return
-        QTimer.singleShot(100, self._wait_for_live_output)
+        self._schedule_transition(100, self._wait_for_live_output)
 
     def _wait_for_sonic_live_reference(self) -> None:
         live = self._live_status()
@@ -673,7 +835,7 @@ class MainWindow(QMainWindow):
             write_live_control(self.live_generation, False)
             self._show_error(ConsoleError("SONIC did not decode the live streamed reference; control remains disabled"))
             return
-        QTimer.singleShot(100, self._wait_for_sonic_live_reference)
+        self._schedule_transition(100, self._wait_for_sonic_live_reference)
 
     def play_selected(self) -> None:
         row = self.recording_table.currentRow()
@@ -685,6 +847,10 @@ class MainWindow(QMainWindow):
 
     def _arm_for_playback(self, row: int) -> bool:
         self.refresh_status()
+        if self.live_pipeline.state().session_exists:
+            self._show_error(ConsoleError("stop the live or mock pipeline before recorded playback"))
+            return False
+        self.requested_mode = "RECORDED PLAYBACK"
         if self.last_state and self.last_state.streaming_enabled:
             return True
         if not self.last_state or not self.last_state.sonic_initialized:
@@ -693,7 +859,8 @@ class MainWindow(QMainWindow):
         try:
             self.stack.arm_stream()
             self.now_playing.setText("ARMING STREAM / PLAYBACK STARTS AUTOMATICALLY")
-            QTimer.singleShot(700, lambda: self._publish(row))
+            self._set_operation_stage("ARMING RECORDED STREAM", "Playback starts after SONIC acknowledges streaming.", 0.7)
+            self._schedule_transition(700, lambda: self._publish(row))
             return False
         except ConsoleError as error:
             self._show_error(error)
@@ -749,7 +916,8 @@ class MainWindow(QMainWindow):
         try:
             self.stack.arm_stream()
             self.now_playing.setText("ARMING STREAM / PLAYLIST STARTS AUTOMATICALLY")
-            QTimer.singleShot(700, self.play_all)
+            self._set_operation_stage("ARMING RECORDED STREAM", "Playlist starts after SONIC acknowledges streaming.", 0.7)
+            self._schedule_transition(700, self.play_all)
         except ConsoleError as error:
             self._show_error(error)
         return False
@@ -797,17 +965,21 @@ class MainWindow(QMainWindow):
             f"{recording.duration_seconds:.2f} s Xsens motion through SONIC Protocol v1."
         )
         if self.last_state and not self.last_state.control_started:
-            QTimer.singleShot(500, self._start_control_after_publish)
+            self._set_operation_stage("REFERENCE PUBLISHED", "Waiting before requesting SONIC control.", 0.5)
+            self._schedule_transition(500, self._start_control_after_publish)
+        else:
+            self._clear_operation_stage()
         return True
 
     def _start_control_after_publish(self) -> None:
         try:
             self.stack.start_control()
             self.control_start_deadline = time.monotonic() + 5.0
+            self._set_operation_stage("CONTROL STARTING", "Waiting for SONIC to confirm its control loop.", 5.0)
             self._append_log(
                 "Selected reference loaded; waiting for confirmed SONIC control under elastic support."
             )
-            QTimer.singleShot(100, self._wait_for_recorded_control)
+            self._schedule_transition(100, self._wait_for_recorded_control)
         except ConsoleError as error:
             self._show_error(error)
 
@@ -821,29 +993,39 @@ class MainWindow(QMainWindow):
             self._append_log(
                 f"SONIC control confirmed; retaining support for {GUI_SUPPORTED_CONTROL_SECONDS:.1f} seconds."
             )
-            QTimer.singleShot(round(GUI_SUPPORTED_CONTROL_SECONDS * 1000), self._release_support)
-            QTimer.singleShot(1000, self.refresh_status)
+            self._set_operation_stage(
+                "CONTROL STABILIZING",
+                "Control is confirmed; elastic support remains enabled briefly.",
+                GUI_SUPPORTED_CONTROL_SECONDS,
+            )
+            self._schedule_transition(round(GUI_SUPPORTED_CONTROL_SECONDS * 1000), self._release_support)
+            self._schedule_transition(1000, self.refresh_status)
             return
         if time.monotonic() >= self.control_start_deadline:
             self._show_error(ConsoleError("SONIC did not confirm CONTROL within 5 seconds; support remains enabled"))
             return
-        QTimer.singleShot(100, self._wait_for_recorded_control)
+        self._schedule_transition(100, self._wait_for_recorded_control)
 
     def _release_support(self) -> None:
         try:
             self.stack.release_support()
             self._append_log("MuJoCo elastic support released after controller stabilization.")
+            self._clear_operation_stage()
         except ConsoleError as error:
             self._show_error(error)
 
     def _stream_ready(self) -> bool:
         self.refresh_status()
+        if self.live_pipeline.state().session_exists:
+            self._show_error(ConsoleError("stop the live or mock pipeline before recorded playback"))
+            return False
         if not self.last_state or not self.last_state.streaming_enabled:
             self._show_error(ConsoleError("start the stack and enable controller streaming before playback"))
             return False
         return True
 
     def _refresh_progress(self) -> None:
+        self._refresh_operation_progress()
         recording = self.current_recording
         if recording is None:
             return
@@ -857,6 +1039,22 @@ class MainWindow(QMainWindow):
         if time.monotonic() >= self.motion_ends_at and not self.queue_timer.isActive():
             self.now_playing.setText(f"{recording.name.replace('-', ' ').upper()}  /  COMPLETE")
 
+    def _refresh_operation_progress(self) -> None:
+        if self.operation_stage is None:
+            return
+        phase, detail = self.operation_stage
+        self.operation_phase.setText(phase)
+        if self.operation_deadline <= 0:
+            self.operation_progress.setRange(0, 0)
+            self.operation_detail.setText(detail)
+            return
+        now = time.monotonic()
+        duration = max(0.001, self.operation_deadline - self.operation_started_at)
+        elapsed = max(0.0, now - self.operation_started_at)
+        self.operation_progress.setRange(0, 1000)
+        self.operation_progress.setValue(round(min(1.0, elapsed / duration) * 1000))
+        self.operation_detail.setText(f"{detail}  {max(0.0, self.operation_deadline - now):.1f} s remaining")
+
     def emergency_stop(self) -> None:
         if QMessageBox.warning(
             self,
@@ -867,6 +1065,8 @@ class MainWindow(QMainWindow):
         ) != QMessageBox.StandardButton.Yes:
             return
         self.cancel_queue()
+        self._cancel_pending_transitions()
+        write_live_control(self.live_generation, False)
         try:
             self.stack.emergency_stop()
             self._append_log("Emergency stop sent to SONIC.")
@@ -878,11 +1078,13 @@ class MainWindow(QMainWindow):
             self.log_view.appendPlainText(message.rstrip())
 
     def _show_error(self, error: Exception) -> None:
+        self._clear_operation_stage()
         self._append_log(f"ERROR: {error}")
         QMessageBox.critical(self, "SONIC simulation console", str(error))
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API
         self.queue_timer.stop()
+        self._cancel_pending_transitions()
         self.publisher.close()
         event.accept()
 

@@ -674,7 +674,7 @@ MuJoCo support release. Isaac playback remains a separate kinematic comparison
 and does not use the SONIC controller.
 
 For live suit input, first install Pink in the `tv` Conda environment, then use
-the GUI's `START LIVE XSENS PIPELINE`, `CALIBRATE LIVE NEUTRAL`, and `ENABLE LIVE
+the GUI's `START LIVE SUIT PIPELINE`, `CALIBRATE LIVE NEUTRAL`, and `ENABLE LIVE
 XSENS` controls. Live mode remains simulation-only until suit/network failure
 injection and dynamic telemetry acceptance criteria pass.
 
