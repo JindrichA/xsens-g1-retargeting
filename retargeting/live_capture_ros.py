@@ -1,4 +1,4 @@
-"""Bridge freshness-aware ROS 2 Xsens frames to canonical loopback ZMQ."""
+"""Bridge freshness-aware ROS 2 Xsens frames to an atomic canonical snapshot."""
 
 from __future__ import annotations
 

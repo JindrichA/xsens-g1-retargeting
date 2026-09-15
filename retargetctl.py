@@ -17,6 +17,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = ROOT / "config" / "stacks.json"
+SUPPORTED_PROFILES = {"simulation", "simulation-adapter"}
 
 
 class ConfigError(ValueError):
@@ -47,11 +48,41 @@ def load_stacks(path: Path) -> dict[str, dict[str, Any]]:
     if not isinstance(stacks, dict) or not stacks:
         raise ConfigError("config must contain a non-empty 'stacks' object")
     for name, stack in stacks.items():
+        for field in ("profile", "maturity"):
+            if field in stack and not isinstance(stack[field], str):
+                raise ConfigError(f"stack '{name}' field '{field}' must be a string")
+        dependencies = stack.get("dependencies", [])
+        if not isinstance(dependencies, list) or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("name"), str)
+            or ("location" in item and not isinstance(item["location"], str))
+            for item in dependencies
+        ):
+            raise ConfigError(f"stack '{name}' dependencies must be named objects")
+        requirements = stack.get("requirements", {})
+        files = requirements.get("files", []) if isinstance(requirements, dict) else None
+        if files is None or not isinstance(files, list) or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("path"), str)
+            or not isinstance(item.get("contains", []), list)
+            or any(not isinstance(marker, str) for marker in item.get("contains", []))
+            for item in files
+        ):
+            raise ConfigError(f"stack '{name}' requirements.files must contain path objects")
         if not isinstance(stack.get("components"), list) or not stack["components"]:
             raise ConfigError(f"stack '{name}' must contain components")
         component_names = [component.get("name") for component in stack["components"]]
         if any(not name for name in component_names) or len(component_names) != len(set(component_names)):
             raise ConfigError(f"stack '{name}' has missing or duplicate component names")
+        for component in stack["components"]:
+            if not all(isinstance(component.get(field), str) for field in ("name", "cwd", "command")):
+                raise ConfigError(f"stack '{name}' components require string name, cwd, and command fields")
+            for field in ("inputs", "outputs"):
+                if field in component and (
+                    not isinstance(component[field], list)
+                    or any(not isinstance(item, str) for item in component[field])
+                ):
+                    raise ConfigError(f"stack '{name}' component '{component['name']}' has invalid {field}")
     return stacks
 
 
@@ -73,6 +104,16 @@ def check_stack(name: str, stack: dict[str, Any]) -> list[str]:
         path = Path(expand(raw_path))
         if not path.exists():
             missing.append(f"path: {path}")
+    for file_requirement in requirements.get("files", []):
+        path = Path(expand(file_requirement["path"]))
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            missing.append(f"file: {path}")
+            continue
+        for marker in file_requirement.get("contains", []):
+            if marker not in content:
+                missing.append(f"content {marker!r} in: {path}")
     for component in stack["components"]:
         cwd = Path(expand(component["cwd"]))
         if not cwd.is_dir():
@@ -84,6 +125,48 @@ def check_stack(name: str, stack: dict[str, Any]) -> list[str]:
     else:
         print(f"{name}: ready")
     return missing
+
+
+def describe_stack(name: str, stack: dict[str, Any]) -> None:
+    print(name)
+    print(f"  description: {stack.get('description', 'not documented')}")
+    print(f"  profile: {stack.get('profile', 'unspecified')}")
+    print(f"  maturity: {stack.get('maturity', 'unspecified')}")
+    print(f"  tmux session: {stack.get('session', f'retarget-{name}')}")
+
+    dependencies = stack.get("dependencies", [])
+    print("  dependencies:")
+    if not dependencies:
+        print("    none documented")
+    for dependency in dependencies:
+        location = expand(dependency["location"]) if dependency.get("location") else "system"
+        print(f"    - {dependency['name']} [{dependency.get('kind', 'external')}] @ {location}")
+        if dependency.get("purpose"):
+            print(f"      {dependency['purpose']}")
+
+    requirements = stack.get("requirements", {})
+    print("  prerequisite checks:")
+    for executable in requirements.get("executables", []):
+        print(f"    - executable: {executable}")
+    for path in requirements.get("paths", []):
+        print(f"    - path: {expand(path)}")
+    for file_requirement in requirements.get("files", []):
+        markers = ", ".join(file_requirement.get("contains", []))
+        suffix = f" containing: {markers}" if markers else ""
+        print(f"    - file: {expand(file_requirement['path'])}{suffix}")
+    if not any(requirements.get(field) for field in ("executables", "paths", "files")):
+        print("    none documented")
+
+    print("  components:")
+    for component in stack["components"]:
+        print(f"    - {component['name']}")
+        print(f"      runtime: {component.get('runtime', 'not documented')}")
+        print(f"      cwd: {expand(component['cwd'])}")
+        if component.get("role"):
+            print(f"      role: {component['role']}")
+        for field in ("inputs", "outputs"):
+            values = component.get(field, [])
+            print(f"      {field}: {', '.join(values) if values else 'none'}")
 
 
 def tmux(*args: str, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -161,6 +244,10 @@ def start_stack(
     dry_run: bool,
     backend: str = "auto",
 ) -> int:
+    profile = stack.get("profile")
+    if profile not in SUPPORTED_PROFILES:
+        declared = profile if profile is not None else "missing"
+        raise ConfigError(f"stack '{name}' uses unsupported profile '{declared}'")
     session = stack.get("session", f"retarget-{name}")
     commands = [(component["name"], pane_command(component)) for component in stack["components"]]
     if dry_run:
@@ -217,8 +304,37 @@ def show_status(name: str, stack: dict[str, Any]) -> int:
         "#{window_name}: #{pane_current_command} dead=#{pane_dead}",
         capture=True,
     )
-    print(f"{name}: running ({session})")
+    pane_lines = result.stdout.splitlines()
+    failed = []
+    for component in stack["components"]:
+        pane = next(
+            (line for line in pane_lines if line.startswith(f"{component['name']}: ")),
+            None,
+        )
+        if pane is None:
+            failed.append(f"{component['name']} (missing pane)")
+            continue
+        if pane.endswith("dead=1"):
+            failed.append(f"{component['name']} (dead pane)")
+            continue
+        log = tmux(
+            "capture-pane",
+            "-p",
+            "-t",
+            f"{session}:{component['name']}",
+            "-S",
+            "-100",
+            capture=True,
+            check=False,
+        ).stdout
+        if "[retargetctl] process exited with status" in log:
+            failed.append(f"{component['name']} (process exited)")
+    label = "degraded" if failed else "running"
+    print(f"{name}: {label} ({session})")
     print(result.stdout.rstrip())
+    if failed:
+        print(f"failed components: {', '.join(failed)}")
+        return 1
     return 0
 
 
@@ -240,6 +356,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     subparsers = parser.add_subparsers(dest="action", required=True)
     subparsers.add_parser("list", help="list configured stacks")
+
+    describe = subparsers.add_parser("describe", help="show dependencies and process boundaries")
+    describe.add_argument("stack")
 
     check = subparsers.add_parser("check", help="check stack prerequisites")
     check.add_argument("stack", nargs="?")
@@ -269,13 +388,18 @@ def main(argv: list[str] | None = None) -> int:
         stacks = load_stacks(args.config)
         if args.action == "list":
             for name, stack in stacks.items():
-                print(f"{name:20} {stack.get('description', '')}")
+                profile = stack.get("profile", "unspecified")
+                maturity = stack.get("maturity", "unspecified")
+                print(f"{name:24} [{profile} / {maturity}] {stack.get('description', '')}")
             return 0
         if args.action == "check" and args.stack is None:
             results = [check_stack(name, stack) for name, stack in stacks.items()]
             return int(any(results))
 
         stack = select_stack(stacks, args.stack)
+        if args.action == "describe":
+            describe_stack(args.stack, stack)
+            return 0
         if args.action == "check":
             return int(bool(check_stack(args.stack, stack)))
         if args.action == "start":

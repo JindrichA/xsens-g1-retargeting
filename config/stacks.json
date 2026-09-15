@@ -2,7 +2,29 @@
   "stacks": {
     "xsens-g1-mujoco": {
       "description": "Working Xsens hand gestures to G1 locomotion in MuJoCo (not full-body retargeting)",
+      "profile": "simulation",
+      "maturity": "legacy-baseline",
       "session": "retarget-xsens-g1",
+      "dependencies": [
+        {
+          "name": "xsens_mvn_ros2",
+          "kind": "sibling-repository",
+          "location": "{projects}/xsens_mvn_ros2",
+          "purpose": "ROS 2 Xsens source, hand bridge, and legacy G1 runner"
+        },
+        {
+          "name": "unitree_rl_gym",
+          "kind": "sibling-repository",
+          "location": "{projects}/unitree_rl_gym",
+          "purpose": "Pretrained G1 locomotion policy and MuJoCo assets"
+        },
+        {
+          "name": "tv",
+          "kind": "conda-environment",
+          "location": "{home}/miniforge3/envs/tv",
+          "purpose": "Python runtime for the legacy MuJoCo policy"
+        }
+      ],
       "requirements": {
         "executables": ["bash"],
         "paths": [
@@ -11,23 +33,36 @@
           "{projects}/xsens_mvn_ros2/xsens_hand_cmd_bridge.py",
           "{projects}/xsens_mvn_ros2/unitree_rl_gym_xsens_hands.py",
           "{home}/miniforge3/etc/profile.d/conda.sh",
+          "{home}/miniforge3/envs/tv/bin/python",
           "{projects}/unitree_rl_gym/deploy/pre_train/g1/motion.pt"
         ]
       },
       "components": [
         {
           "name": "xsens",
+          "runtime": "ROS 2 Jazzy / host Python",
+          "role": "Receive MVN Studio UDP and publish Xsens ROS topics",
+          "inputs": ["MVN Studio UDP 9763"],
+          "outputs": ["ROS /link_states", "ROS /joint_states", "ROS /tf"],
           "cwd": "{projects}/xsens_mvn_ros2",
           "command": "source /opt/ros/jazzy/setup.bash && source install/setup.bash && ros2 launch xsens_mvn_ros2 xsens_stream.launch.py"
         },
         {
           "name": "bridge",
+          "runtime": "ROS 2 Jazzy / host Python",
+          "role": "Convert hand displacement to locomotion velocity commands",
+          "inputs": ["ROS /link_states"],
+          "outputs": ["atomic /tmp/xsens_hand_cmd.json"],
           "cwd": "{projects}/xsens_mvn_ros2",
           "delay": 2,
           "command": "source /opt/ros/jazzy/setup.bash && source install/setup.bash && python3 xsens_hand_cmd_bridge.py"
         },
         {
           "name": "mujoco",
+          "runtime": "Conda environment tv",
+          "role": "Run pretrained G1 locomotion policy in MuJoCo",
+          "inputs": ["atomic /tmp/xsens_hand_cmd.json"],
+          "outputs": ["MuJoCo viewer"],
           "cwd": "{projects}/xsens_mvn_ros2",
           "delay": 1,
           "command": "source {home}/miniforge3/etc/profile.d/conda.sh && conda activate tv && python unitree_rl_gym_xsens_hands.py"
@@ -36,7 +71,23 @@
     },
     "xsens-h1-isaac": {
       "description": "Working Xsens locomotion intent to Isaac Sim H1 policy (not full-body retargeting)",
+      "profile": "simulation",
+      "maturity": "legacy-baseline",
       "session": "retarget-xsens-h1",
+      "dependencies": [
+        {
+          "name": "xsens_mvn_ros2",
+          "kind": "sibling-repository",
+          "location": "{projects}/xsens_mvn_ros2",
+          "purpose": "ROS 2 Xsens source and H1 launcher"
+        },
+        {
+          "name": "Isaac Sim",
+          "kind": "external-runtime",
+          "location": "{home}/isaacsim",
+          "purpose": "H1 policy simulation and visualization"
+        }
+      ],
       "requirements": {
         "executables": ["bash"],
         "paths": [
@@ -49,11 +100,19 @@
       "components": [
         {
           "name": "xsens",
+          "runtime": "ROS 2 Jazzy / host Python",
+          "role": "Receive MVN Studio UDP and publish Xsens ROS topics",
+          "inputs": ["MVN Studio UDP 9763"],
+          "outputs": ["ROS /link_states", "ROS /joint_states", "ROS /tf"],
           "cwd": "{projects}/xsens_mvn_ros2",
           "command": "source /opt/ros/jazzy/setup.bash && source install/setup.bash && ros2 launch xsens_mvn_ros2 xsens_stream.launch.py"
         },
         {
           "name": "isaac-h1",
+          "runtime": "Isaac Sim Python with ROS 2 setup",
+          "role": "Convert Xsens motion to locomotion intent for an H1 policy",
+          "inputs": ["ROS /link_states"],
+          "outputs": ["Isaac Sim viewer"],
           "cwd": "{projects}/xsens_mvn_ros2",
           "delay": 2,
           "command": "./run_isaacsim_h1_xsens.sh --debug"
@@ -62,7 +121,35 @@
     },
     "sonic-g1-mujoco": {
       "description": "GR00T SONIC G1 streaming controller with its MuJoCo simulator (publisher started separately)",
+      "profile": "simulation",
+      "maturity": "experimental",
       "session": "retarget-sonic-g1",
+      "dependencies": [
+        {
+          "name": "GR00T-WholeBodyControl",
+          "kind": "sibling-repository",
+          "location": "{projects}/GR00T-WholeBodyControl",
+          "purpose": "SONIC controller, policy assets, and MuJoCo loop"
+        },
+        {
+          "name": "TensorRT 10.13.3",
+          "kind": "external-runtime",
+          "location": "{projects}/TensorRT-10.13.3.9",
+          "purpose": "SONIC neural-network inference"
+        },
+        {
+          "name": "ONNX Runtime 1.16.3",
+          "kind": "external-runtime",
+          "location": "{projects}/onnxruntime-linux-x64-1.16.3",
+          "purpose": "SONIC model runtime"
+        },
+        {
+          "name": "sonic-build-deps",
+          "kind": "local-tool-prefix",
+          "location": "{projects}/sonic-build-deps",
+          "purpose": "Isolated libzmq, tmux, and xdotool binaries"
+        }
+      ],
       "requirements": {
         "executables": ["bash"],
         "paths": [
@@ -83,11 +170,19 @@
       "components": [
         {
           "name": "mujoco",
+          "runtime": "GR00T-WholeBodyControl .venv_sim",
+          "role": "Run grounded G1 MuJoCo and Unitree DDS simulation",
+          "inputs": ["Unitree DDS LowCmd on loopback domain 0", "viewer key 9 for support release"],
+          "outputs": ["Unitree DDS LowState on loopback domain 0", "MuJoCo viewer"],
           "cwd": "{projects}/GR00T-WholeBodyControl",
-          "command": "source .venv_sim/bin/activate && python {root}/retargeting/grounded_sim_loop.py"
+          "command": "source .venv_sim/bin/activate && PYTHONPATH={root} python -m retargeting.grounded_sim_loop"
         },
         {
           "name": "sonic",
+          "runtime": "Native SONIC binary with TensorRT and ONNX Runtime",
+          "role": "Track Protocol v1 references and command simulated G1 joints",
+          "inputs": ["ZMQ pose tcp://127.0.0.1:5556", "operator keys Enter, ], O"],
+          "outputs": ["Unitree DDS LowCmd on interface lo"],
           "cwd": "{projects}/GR00T-WholeBodyControl/gear_sonic_deploy",
           "delay": 2,
           "command": "export TensorRT_ROOT={projects}/TensorRT-10.13.3.9 && export onnxruntime_ROOT={projects}/onnxruntime-linux-x64-1.16.3 && export LD_LIBRARY_PATH={projects}/TensorRT-10.13.3.9/lib:{projects}/onnxruntime-linux-x64-1.16.3/lib:{projects}/sonic-build-deps/lib:$LD_LIBRARY_PATH && ./target/release/g1_deploy_onnx_ref lo policy/release/model_decoder.onnx reference/example --obs-config policy/release/observation_config.yaml --encoder-file policy/release/model_encoder.onnx --planner-file planner/target_vel/V2/planner_sonic.onnx --input-type zmq --output-type all --zmq-host localhost --disable-crc-check"
@@ -95,32 +190,82 @@
       ]
     },
     "live-xsens-sonic-sim": {
-      "description": "Freshness-aware live Xsens capture and Pink retargeting for SONIC simulation",
+      "description": "Live Xsens source, capture, and Pink retargeting; SONIC/MuJoCo starts separately",
+      "profile": "simulation-adapter",
+      "maturity": "implemented-unvalidated-with-suit",
       "session": "retarget-live-xsens",
+      "dependencies": [
+        {
+          "name": "xsens_mvn_ros2",
+          "kind": "sibling-repository",
+          "location": "{projects}/xsens_mvn_ros2",
+          "purpose": "Freshness-aware Xsens ROS 2 source and message definitions"
+        },
+        {
+          "name": "unitree_rl_gym",
+          "kind": "sibling-repository",
+          "location": "{projects}/unitree_rl_gym",
+          "purpose": "G1 29-DOF URDF and mesh assets"
+        },
+        {
+          "name": "tv",
+          "kind": "conda-environment",
+          "location": "{home}/miniforge3/envs/tv",
+          "purpose": "Pink, Pinocchio, quadprog, NumPy, and pyzmq runtime"
+        },
+        {
+          "name": "sonic-g1-mujoco",
+          "kind": "separate-stack",
+          "location": "{root}/config/stacks.json",
+          "purpose": "Simulation/controller consumer; must be started separately"
+        }
+      ],
       "requirements": {
         "executables": ["bash"],
         "paths": [
           "/opt/ros/jazzy/setup.bash",
           "{projects}/xsens_mvn_ros2/install/setup.bash",
-          "{projects}/xsens_mvn_ros2/install/xsens_mvn_msgs/share/xsens_mvn_msgs/msg/LinkStateArray.idl",
           "{home}/miniforge3/etc/profile.d/conda.sh",
+          "{home}/miniforge3/envs/tv/bin/python",
           "{projects}/unitree_rl_gym/resources/robots/g1_description/g1_29dof.urdf"
+        ],
+        "files": [
+          {
+            "path": "{projects}/xsens_mvn_ros2/install/xsens_mvn_msgs/share/xsens_mvn_msgs/msg/LinkStateArray.idl",
+            "contains": [
+              "source_sample_counter",
+              "source_frame_time_ms",
+              "source_receive_steady_ns"
+            ]
+          }
         ]
       },
       "components": [
         {
           "name": "source",
+          "runtime": "ROS 2 Jazzy / host Python",
+          "role": "Receive MVN Studio packets and publish freshness-aware ROS frames",
+          "inputs": ["MVN Studio UDP 9763"],
+          "outputs": ["ROS /link_states"],
           "cwd": "{projects}/xsens_mvn_ros2",
           "command": "source /opt/ros/jazzy/setup.bash && source install/setup.bash && ros2 launch xsens_mvn_ros2 xsens_stream.launch.py launch_rviz:=false launch_description:=false"
         },
         {
           "name": "capture",
+          "runtime": "ROS 2 Jazzy / host Python",
+          "role": "Validate and convert ROS poses into canonical live snapshots",
+          "inputs": ["ROS /link_states"],
+          "outputs": ["atomic /tmp/xsens-live-frame.json"],
           "cwd": "{root}",
           "delay": 1,
           "command": "source /opt/ros/jazzy/setup.bash && source {projects}/xsens_mvn_ros2/install/setup.bash && python3 -m retargeting.live_capture_ros"
         },
         {
           "name": "retarget",
+          "runtime": "Conda environment tv",
+          "role": "Calibrate, solve G1 Pink IK, enforce current limits, and publish rolling references",
+          "inputs": ["atomic /tmp/xsens-live-frame.json", "atomic /tmp/xsens-live-control.json"],
+          "outputs": ["ZMQ pose tcp://127.0.0.1:5556", "atomic /tmp/xsens-live-status.json"],
           "cwd": "{root}",
           "delay": 1,
           "command": "source {home}/miniforge3/etc/profile.d/conda.sh && conda activate tv && python -m retargeting.live_retarget"

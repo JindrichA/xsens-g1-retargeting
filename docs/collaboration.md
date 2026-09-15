@@ -22,9 +22,10 @@ models, and sibling upstream projects are deliberately kept outside Git.
 ```
 
 The MVNX tools and tests use the Python standard library. Isaac-specific
-dependencies come from Isaac Sim's bundled Python environment. The optional
-SONIC protocol publisher uses only `pyzmq`, declared in
-`requirements-sonic-stream.txt` and isolated from ROS, Isaac, and SONIC.
+dependencies come from Isaac Sim's bundled Python environment. The SONIC
+publisher uses `requirements-sonic-stream.txt`; the GUI uses
+`requirements-sonic-gui.txt`. Both remain isolated from ROS, Isaac, and SONIC.
+See [`runtime.md`](runtime.md) for the complete environment and IPC map.
 
 ## Clone Layout
 
@@ -74,9 +75,9 @@ export RETARGET_G1_URDF=/path/to/g1_29dof.urdf
 
 ## Recording Data
 
-The local `xsens_TJ_08072026/` directory is approximately 5 GB and is ignored by
-Git. It includes large MVN, MVNX, BVH, and XLSX exports. Do not force-add these
-files to the source repository.
+The local `xsens_TJ_08072026/` and `GS_data/` directories are ignored by Git.
+They contain large motion-capture recordings. Do not force-add these files to
+the source repository. See [`data.md`](data.md) for dataset and artifact rules.
 
 Motion capture can be identifiable research data. Confirm participant consent,
 organizational policy, and the allowed recipients before transferring it. Use
@@ -114,6 +115,7 @@ Check local prerequisites for the configured experiment stacks:
 
 ```bash
 python3 retargetctl.py list
+python3 retargetctl.py describe sonic-g1-mujoco
 python3 retargetctl.py check
 ```
 

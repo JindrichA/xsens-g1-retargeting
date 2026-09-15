@@ -10,12 +10,18 @@ from pathlib import Path
 import sys
 import time
 
+SCRIPT_ROOT = Path(__file__).resolve().parent.parent
+if __package__:
+    from .paths import PROJECT_ROOT as ROOT, projects_root
+else:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+    from retargeting.paths import PROJECT_ROOT as ROOT, projects_root
+
 from isaacsim import SimulationApp
 
 
-ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MVNX = ROOT / "xsens_TJ_08072026" / "MVNX export" / "Bending forward.mvnx"
-PROJECTS_ROOT = Path(os.environ.get("RETARGET_PROJECTS_ROOT", ROOT.parent)).expanduser()
+PROJECTS_ROOT = projects_root()
 DEFAULT_G1_URDF = Path(
     os.environ.get(
         "RETARGET_G1_URDF",

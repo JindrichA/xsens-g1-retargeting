@@ -11,6 +11,5 @@ if [[ ! -x "$ISAACSIM_PYTHON" ]]; then
   exit 1
 fi
 
-exec "$ISAACSIM_PYTHON" \
-  "$SCRIPT_DIR/retargeting/isaac_g1_playback.py" \
-  "$@"
+export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+exec "$ISAACSIM_PYTHON" -m retargeting.isaac_g1_playback "$@"

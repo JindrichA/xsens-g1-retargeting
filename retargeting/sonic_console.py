@@ -14,9 +14,11 @@ import sys
 import time
 
 from .sonic_stream import SonicStreamError, load_trajectory, pack_protocol_v1
+from .paths import PROJECT_ROOT, projects_root
 
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = PROJECT_ROOT
+PROJECTS_ROOT = projects_root()
 STACK_NAME = "sonic-g1-mujoco"
 SESSION_NAME = "retarget-sonic-g1"
 ISAAC_SESSION_NAME = "retarget-isaac-g1"
@@ -147,6 +149,10 @@ def live_next_action(sonic_initialized: bool, pipeline: LivePipelineState, live:
     return f"LIVE STATUS / {state}"
 
 
+def process_log_exited(log: str) -> bool:
+    return "[live] process exited" in log or "[retargetctl] process exited" in log
+
+
 def import_mvnx_command(source: str | Path, output: str | Path) -> list[str]:
     source = Path(source).expanduser().resolve()
     output = Path(output).expanduser().resolve()
@@ -260,7 +266,7 @@ def parse_stack_state(running: bool, panes: str, sonic_log: str, mujoco_log: str
 
 class StackController:
     def __init__(self) -> None:
-        bundled_tmux = ROOT.parent / "sonic-build-deps" / "bin" / "tmux"
+        bundled_tmux = PROJECTS_ROOT / "sonic-build-deps" / "bin" / "tmux"
         self.tmux = str(bundled_tmux if bundled_tmux.exists() else shutil.which("tmux") or "tmux")
         self.environment = os.environ.copy()
         self.environment["PATH"] = f"{Path(self.tmux).parent}:{self.environment.get('PATH', '')}"
@@ -359,7 +365,7 @@ class StackController:
         state = self.state()
         if not state.running or not state.control_started:
             raise ConsoleError("SONIC control must be active before releasing MuJoCo support")
-        xdotool = ROOT.parent / "sonic-build-deps" / "bin" / "xdotool"
+        xdotool = PROJECTS_ROOT / "sonic-build-deps" / "bin" / "xdotool"
         if not xdotool.is_file():
             raise ConsoleError(f"xdotool is required to release MuJoCo support: {xdotool}")
         search = subprocess.run(
@@ -511,12 +517,12 @@ class LivePipelineController:
         capture_log = self._log("capture")
         retarget_log = self._log("retarget")
         mock_log = self._log("mock")
-        mock_running = "mock:0" in panes and "[live] process exited" not in mock_log
+        mock_running = "mock:0" in panes and not process_log_exited(mock_log)
         return LivePipelineState(
             True,
-            mock_running or ("source:0" in panes and "[live] process exited" not in source_log),
-            mock_running or ("capture:0" in panes and "[live] process exited" not in capture_log),
-            "retarget:0" in panes and "[live] process exited" not in retarget_log,
+            mock_running or ("source:0" in panes and not process_log_exited(source_log)),
+            mock_running or ("capture:0" in panes and not process_log_exited(capture_log)),
+            "retarget:0" in panes and not process_log_exited(retarget_log),
             mock_running,
         )
 
@@ -526,40 +532,9 @@ class LivePipelineController:
             return "Live Xsens pipeline is already running"
         if state.session_exists:
             self.stop()
-        source_command = (
-            f"source /opt/ros/jazzy/setup.bash && "
-            f"source {shlex.quote(str(ROOT.parent / 'xsens_mvn_ros2/install/setup.bash'))} && "
-            "ros2 launch xsens_mvn_ros2 xsens_stream.launch.py launch_rviz:=false launch_description:=false; "
-            "rc=$?; printf '\n[live] process exited with status %s\n' \"$rc\"; exec bash"
+        return self.commands._run_retargetctl(
+            "start", "live-xsens-sonic-sim", "--backend", "tmux"
         )
-        ros_command = (
-            f"cd {shlex.quote(str(ROOT))} && source /opt/ros/jazzy/setup.bash && "
-            f"source {shlex.quote(str(ROOT.parent / 'xsens_mvn_ros2/install/setup.bash'))} && "
-            "python3 -m retargeting.live_capture_ros; "
-            "rc=$?; printf '\n[live] process exited with status %s\n' \"$rc\"; exec bash"
-        )
-        retarget_command = (
-            f"cd {shlex.quote(str(ROOT))} && source {shlex.quote(str(Path.home() / 'miniforge3/etc/profile.d/conda.sh'))} && "
-            "conda activate tv && python -m retargeting.live_retarget; "
-            "rc=$?; printf '\n[live] process exited with status %s\n' \"$rc\"; exec bash"
-        )
-        self.commands._tmux(
-            "new-session", "-d", "-s", LIVE_SESSION_NAME, "-n", "source",
-            "bash", "-lc", source_command,
-        )
-        try:
-            self.commands._tmux(
-                "new-window", "-t", LIVE_SESSION_NAME, "-n", "capture",
-                "bash", "-lc", ros_command,
-            )
-            self.commands._tmux(
-                "new-window", "-t", LIVE_SESSION_NAME, "-n", "retarget",
-                "bash", "-lc", retarget_command,
-            )
-        except Exception:
-            self.commands._tmux("kill-session", "-t", LIVE_SESSION_NAME, check=False)
-            raise
-        return "Started Xsens ROS source, live capture, and retargeting pipeline"
 
     def start_mock(self, source: str | Path) -> str:
         source = Path(source).expanduser().resolve()

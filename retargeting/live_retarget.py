@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -21,6 +22,7 @@ from .live_frame import (
     decode_live_frame_json,
 )
 from .sonic_stream import pack_protocol_v1
+from .paths import projects_root
 
 
 @dataclass
@@ -60,11 +62,12 @@ def write_status(path: Path, **values) -> None:
 
 
 def emergency_stop_sonic(session: str = "retarget-sonic-g1") -> bool:
-    tmux = Path.home() / "Projects/sonic-build-deps/bin/tmux"
-    if not tmux.is_file():
+    bundled_tmux = projects_root() / "sonic-build-deps/bin/tmux"
+    tmux = str(bundled_tmux) if bundled_tmux.is_file() else shutil.which("tmux")
+    if tmux is None:
         return False
     result = subprocess.run(
-        [str(tmux), "send-keys", "-t", f"{session}:sonic", "O"],
+        [tmux, "send-keys", "-t", f"{session}:sonic", "O"],
         text=True,
         capture_output=True,
     )
@@ -82,7 +85,11 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=Path("/tmp/xsens-live-frame.json"))
     parser.add_argument("--bind", default="tcp://127.0.0.1:5556")
-    parser.add_argument("--urdf", type=Path, default=Path.home() / "Projects/unitree_rl_gym/resources/robots/g1_description/g1_29dof.urdf")
+    parser.add_argument(
+        "--urdf",
+        type=Path,
+        default=projects_root() / "unitree_rl_gym/resources/robots/g1_description/g1_29dof.urdf",
+    )
     parser.add_argument("--stale-ms", type=float, default=LIVE_STALE_MS)
     parser.add_argument("--window", type=int, default=100)
     parser.add_argument("--warmup", type=int, default=50)

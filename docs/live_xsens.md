@@ -131,16 +131,14 @@ Expected topics:
 | `/diagnostics` | `diagnostic_msgs/msg/DiagnosticArray` | Stream status at 1 Hz |
 
 The ROS node publishes the latest cached source sample at 100 Hz. A 100 Hz ROS
-rate does not prove MVN Studio is providing 100 unique measurements. The current
-driver stamps each ROS publication with the current ROS time, including repeated
-cached samples. `/link_states` timestamps therefore cannot detect a frozen MVN
-UDP source. The one-Hz `/diagnostics` topic reports staleness but is too slow for
-a `100-200 ms` dynamic watchdog.
-
-Before live dynamic control, extend the ROS driver to expose the source datagram
-counter and last-UDP-receive time in every published frame, or add an equivalent
-raw-UDP capture boundary. Do not infer source freshness from ROS topic frequency
-or the current publication timestamps.
+rate does not prove MVN Studio is providing 100 unique measurements, and ordinary
+ROS header timestamps cannot detect a frozen MVN UDP source. The installed
+`xsens_mvn_ros2` sibling is therefore expected to expose the source datagram
+counter, frame time, and steady-clock receive timestamp in every
+`LinkStateArray`. The live capture process uses those fields for its dynamic
+watchdog. `retargetctl check live-xsens-sonic-sim` verifies the installed message
+definition contains those three fields, but suit traffic still requires
+end-to-end validation.
 
 ## `/link_states` Contract
 
@@ -218,11 +216,13 @@ The implemented retargeting process:
 2. Reuse the same pelvis-relative torso, wrist, ankle, and root target logic as
    recorded MVNX playback.
 3. Solve constrained G1 IK at 50 Hz.
-4. Enforce joint limits plus position, velocity, acceleration, and pose-jump
-   limits.
+4. Enforce URDF joint-position limits and a per-joint velocity limit.
 5. Maintain monotonically increasing live frame indexes.
 6. Pack short rolling Protocol v1 chunks rather than a complete CSV recording.
 7. Publish to SONIC's local `pose` endpoint on port `5556`.
+
+Acceleration limiting and explicit target pose-jump rejection are not yet
+implemented. They remain required before unrestricted live motion trials.
 
 The existing `retargeting.sonic_stream` module provides the validated packed
 wire format. `retargeting.live_retarget` reuses `pack_protocol_v1` directly and
@@ -245,7 +245,7 @@ Launch the PyQt console and use this procedure:
 6. Verify the retargeted G1 preview before enabling dynamic control.
 7. Click `ENABLE LIVE XSENS`; the GUI arms ZMQ, starts SONIC, and releases the
    graphical MuJoCo support after stabilization.
-11. Keep the operator ready to press `O` in SONIC.
+8. Keep the operator ready to press `O` in SONIC.
 
 The GUI displays these steps as a live next-action panel. `ENABLE LIVE XSENS`
 is accepted only when the complete pipeline is running, the current state is
@@ -302,20 +302,20 @@ python3 -m retargeting.mock_live_stream \
 This command only produces live-frame snapshots. It does not start SONIC,
 MuJoCo, the retargeter, or any hardware output.
 
-## Watchdog and Fail-Safe Requirements
+## Watchdog And Fail-Safe Status
 
-Before live dynamic testing, implement and unit-test these states:
+The current implementation and remaining requirements are:
 
-| State | Required behavior |
-| --- | --- |
-| No data | Do not initialize or publish |
-| Incomplete skeleton | Reject frame and report missing names |
-| Waiting for calibration | Preview only; no SONIC output |
-| Calibrated but disabled | Hold local state; no SONIC output |
-| Enabled | Publish bounded 50 Hz references |
-| Stale input | Stop publication and enter a defined simulated hold/stop state |
-| Large pose jump | Reject or blend; never snap immediately |
-| Restart after pause | Require pose proximity or a new blend/calibration |
+| State | Current behavior | Status |
+| --- | --- | --- |
+| No data | Do not initialize or publish | Implemented |
+| Incomplete skeleton | Reject frame and report missing names | Implemented |
+| Waiting for calibration | No SONIC output | Implemented |
+| Calibrated but disabled | Hold local state; no SONIC output | Implemented |
+| Enabled | Publish position- and velocity-bounded 50 Hz references | Implemented |
+| Stale input | Stop publication and request SONIC emergency stop | Implemented, acknowledgement missing |
+| Large pose jump | Reject or blend; never snap immediately | Not implemented |
+| Restart after pause | Require proximity, blending, or new calibration | Calibration required after stale stop |
 
 After a true UDP freshness signal exists, start with a `100-200 ms` stale
 threshold and tune it from measured network jitter. Stopping ZMQ publication

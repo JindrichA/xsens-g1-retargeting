@@ -32,4 +32,5 @@ screenshots/
 
 # Local Xsens recordings (about 5 GB and potentially identifiable)
 /xsens_TJ_08072026/
+/GS_data/
 /data/raw/

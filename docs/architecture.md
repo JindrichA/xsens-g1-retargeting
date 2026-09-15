@@ -71,7 +71,9 @@ global segment targets, robot forward kinematics, and constrained IK:
 - Wrist pose objectives and elbow position preferences.
 - Foot pose and contact objectives with stance-foot locking.
 - Posture regularization toward a stable G1 configuration.
-- Joint-position, velocity, acceleration, and self-collision constraints.
+- Joint-position and velocity constraints are implemented today.
+- Acceleration, pose-jump, and self-collision constraints remain target safety
+  requirements, not implemented guarantees.
 
 GMR is the leading existing implementation to evaluate for this kinematic step.
 It is not currently present under `~/Projects`. Its output remains a reference
@@ -84,8 +86,9 @@ trajectory, not safe motor commands; SONIC provides the dynamic tracking layer.
 3. Completed: export 50 Hz SONIC references with explicit joint ordering.
 4. Partial: SONIC MuJoCo transport and playback work; dynamic metrics and stable
    tracking remain.
-5. Replace MVNX playback with ROS 2 `/link_states` while keeping the same
-   canonical frame and retargeting implementation.
-6. Add packet-loss, stale-input, pause/resume, and large-pose-jump tests.
+5. Partial: ROS 2 `/link_states`, canonical live frames, calibration, and a stale
+   watchdog are implemented; suit and network-failure validation remain.
+6. Consolidate the recorded and live retargeters, then add packet-loss,
+   pause/resume, acceleration, and large-pose-jump tests.
 7. Introduce real hardware only behind an explicit profile after simulation
    acceptance criteria pass.

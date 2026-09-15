@@ -378,7 +378,7 @@ class MainWindow(QMainWindow):
         self.live_disable_button.clicked.connect(self.disable_live)
         self.fall_reset_button = QPushButton("RESET AFTER FALL")
         self.fall_reset_button.clicked.connect(self.reset_after_fall)
-        self.live_start_button = QPushButton("START LIVE XSENS PIPELINE")
+        self.live_start_button = QPushButton("START LIVE SUIT PIPELINE")
         self.live_start_button.clicked.connect(self.start_live_pipeline)
         self.mock_start_button = QPushButton("START MOCK FROM SELECTED")
         self.mock_start_button.clicked.connect(self.start_mock_pipeline)

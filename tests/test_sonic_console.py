@@ -7,6 +7,7 @@ from unittest.mock import patch
 from retargeting.sonic_console import (
     ConsoleError,
     LivePipelineState,
+    LivePipelineController,
     StackController,
     StackState,
     derive_operation_status,
@@ -15,6 +16,7 @@ from retargeting.sonic_console import (
     load_live_status,
     pack_recording,
     parse_stack_state,
+    process_log_exited,
 )
 from retargeting.sonic_stream import HEADER_SIZE
 from retargeting.trajectory import SONIC_G1_JOINT_ORDER, TrajectoryRecorder
@@ -142,6 +144,22 @@ class SonicConsoleTests(unittest.TestCase):
         status = derive_operation_status(stack, stopped, {})
         self.assertEqual(status.mode, "RECORDED PLAYBACK")
         self.assertEqual(status.phase, "READY TO PLAY")
+
+    def test_live_pipeline_start_uses_configured_stack(self):
+        controller = LivePipelineController()
+        stopped = LivePipelineState(False, False, False, False)
+        with patch.object(controller, "state", return_value=stopped), patch.object(
+            controller.commands, "_run_retargetctl", return_value="started"
+        ) as run:
+            self.assertEqual(controller.start(), "started")
+        run.assert_called_once_with(
+            "start", "live-xsens-sonic-sim", "--backend", "tmux"
+        )
+
+    def test_process_exit_detection_accepts_both_supervisors(self):
+        self.assertTrue(process_log_exited("[live] process exited with status 1"))
+        self.assertTrue(process_log_exited("[retargetctl] process exited with status 1"))
+        self.assertFalse(process_log_exited("pipeline ready"))
 
 
 if __name__ == "__main__":

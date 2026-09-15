@@ -6,8 +6,15 @@ from pathlib import Path
 import sys
 
 
-ROOT = Path(__file__).resolve().parent.parent
-SONIC_ROOT = ROOT.parent / "GR00T-WholeBodyControl"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if __package__:
+    from .paths import projects_root
+else:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from retargeting.paths import projects_root
+
+
+SONIC_ROOT = projects_root() / "GR00T-WholeBodyControl"
 sys.path.insert(0, str(SONIC_ROOT))
 
 import mujoco  # noqa: E402
