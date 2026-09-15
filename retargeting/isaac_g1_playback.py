@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import math
 import os
 from pathlib import Path
 import sys
@@ -89,36 +88,19 @@ from omni.kit.viewport.utility import capture_viewport_to_file, get_active_viewp
 import omni.usd
 import numpy as np
 import pinocchio as pin
-import pink
-from pink.tasks import FrameTask, PostureTask
 from pxr import Gf, Usd, UsdGeom, Vt
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from retargeting.diagnostics import DiagnosticsRecorder, FrameDiagnostics
+from retargeting.diagnostics import DiagnosticsRecorder
+from retargeting.g1_retargeter import G1Retargeter, quaternion_matrix
 from retargeting.mvnx import MvnxFrame, iter_frames, read_metadata
+from retargeting.retargeting_config import OUTPUT_RATE, TASK_LABELS, TASK_SEGMENTS, RetargetingConfig
 from retargeting.trajectory import TrajectoryRecorder
 from retargeting.xsens_skeleton import IK_SOURCE_SEGMENTS, display_positions, edge_indices
 
 
-OUTPUT_RATE = 50
-ROOT_HEIGHT = 0.76
-TASK_SEGMENTS = {
-    "torso_link": "T8",
-    "left_wrist_yaw_link": "LeftHand",
-    "right_wrist_yaw_link": "RightHand",
-    "left_ankle_roll_link": "LeftFoot",
-    "right_ankle_roll_link": "RightFoot",
-}
-TASK_LABELS = {
-    "torso_link": "torso",
-    "left_wrist_yaw_link": "left_wrist",
-    "right_wrist_yaw_link": "right_wrist",
-    "left_ankle_roll_link": "left_ankle",
-    "right_ankle_roll_link": "right_ankle",
-}
-NEAR_LIMIT_MARGIN = 0.05
 LEFT_COLOR = (0.1, 0.7, 1.0, 1.0)
 RIGHT_COLOR = (1.0, 0.45, 0.1, 1.0)
 CENTER_COLOR = (0.85, 0.85, 0.85, 1.0)
@@ -141,20 +123,6 @@ def ensure_g1_usd(urdf_path: Path) -> Path:
     if not output:
         raise RuntimeError(f"Isaac URDF importer failed for {urdf_path}")
     return Path(output)
-
-
-def quaternion_matrix(quaternion: tuple[float, float, float, float]) -> np.ndarray:
-    w, x, y, z = quaternion
-    norm = np.linalg.norm([w, x, y, z])
-    if norm < 1e-9:
-        raise ValueError("zero-length quaternion")
-    return pin.Quaternion(w / norm, x / norm, y / norm, z / norm).toRotationMatrix()
-
-
-def matrix_quaternion(matrix: np.ndarray) -> np.ndarray:
-    quaternion = pin.Quaternion(matrix)
-    quaternion.normalize()
-    return np.array([quaternion.w, quaternion.x, quaternion.y, quaternion.z])
 
 
 def resample(path: Path) -> tuple[object, list[MvnxFrame]]:
@@ -299,168 +267,6 @@ class RetargetingDiagnosticsDisplay:
         self.errors.GetPointsAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*point) for point in error_points]))
 
 
-class G1Retargeter:
-    def __init__(self, urdf_path: Path, metadata: object, initial_frame: MvnxFrame, scale: float):
-        self.robot = load_pink_robot(urdf_path=urdf_path)
-        self.model = self.robot.model
-        self.scale = scale
-        self.segment_index = {name: index for index, name in enumerate(metadata.segment_names)}
-        missing = sorted(set(TASK_SEGMENTS.values()) - self.segment_index.keys())
-        if missing:
-            raise RuntimeError(f"MVNX is missing required segments: {', '.join(missing)}")
-
-        q0 = pin.neutral(self.model)
-        initial_angles = {
-            "left_hip_pitch_joint": -0.312,
-            "right_hip_pitch_joint": -0.312,
-            "left_knee_joint": 0.669,
-            "right_knee_joint": 0.669,
-            "left_ankle_pitch_joint": -0.363,
-            "right_ankle_pitch_joint": -0.363,
-            "left_shoulder_roll_joint": 0.2,
-            "right_shoulder_roll_joint": -0.2,
-            "left_elbow_joint": 0.6,
-            "right_elbow_joint": 0.6,
-        }
-        for name, angle in initial_angles.items():
-            joint_id = self.model.getJointId(name)
-            q0[self.model.joints[joint_id].idx_q] = angle
-        self.robot.q0 = q0.copy()
-        self.configuration = pink.Configuration(self.model, self.robot.data, q0)
-        self.last_output_q = q0.copy()
-        self.controlled_joint_indices = []
-        for name in self.robot.controlled_joint_names:
-            joint = self.model.joints[self.model.getJointId(name)]
-            if joint.nq != 1:
-                raise RuntimeError(f"controlled joint {name} has unsupported configuration size {joint.nq}")
-            self.controlled_joint_indices.append((name, joint.idx_q))
-
-        self.tasks: dict[str, FrameTask] = {}
-        for frame_name in TASK_SEGMENTS:
-            if "wrist" in frame_name:
-                costs = {"position_cost": 8.0, "orientation_cost": 1.5, "lm_damping": 2.0}
-            elif "ankle" in frame_name:
-                costs = {"position_cost": 10.0, "orientation_cost": 2.0, "lm_damping": 2.0}
-            else:
-                costs = {"position_cost": 3.0, "orientation_cost": 3.0, "lm_damping": 1.0}
-            task = FrameTask(frame_name, **costs)
-            task.set_target_from_configuration(self.configuration)
-            self.tasks[frame_name] = task
-        self.posture = PostureTask(cost=0.03, lm_damping=1.0)
-        self.posture.set_target(q0)
-
-        pelvis_index = self.segment_index["Pelvis"]
-        self.initial_pelvis_position = np.asarray(initial_frame.segment_positions[pelvis_index])
-        self.initial_pelvis_rotation = quaternion_matrix(initial_frame.segment_quaternions[pelvis_index])
-        self.initial_human_relative: dict[str, pin.SE3] = {}
-        self.initial_robot_frames: dict[str, pin.SE3] = {}
-        for robot_frame, human_segment in TASK_SEGMENTS.items():
-            self.initial_human_relative[robot_frame] = self._human_relative(initial_frame, human_segment)
-            self.initial_robot_frames[robot_frame] = self.configuration.get_transform_frame_to_world(robot_frame)
-
-    def _human_relative(self, frame: MvnxFrame, segment_name: str) -> pin.SE3:
-        pelvis_index = self.segment_index["Pelvis"]
-        segment_index = self.segment_index[segment_name]
-        pelvis_position = np.asarray(frame.segment_positions[pelvis_index])
-        pelvis_rotation = quaternion_matrix(frame.segment_quaternions[pelvis_index])
-        segment_position = np.asarray(frame.segment_positions[segment_index])
-        segment_rotation = quaternion_matrix(frame.segment_quaternions[segment_index])
-        return pin.SE3(
-            pelvis_rotation.T @ segment_rotation,
-            pelvis_rotation.T @ (segment_position - pelvis_position),
-        )
-
-    def root_pose(self, frame: MvnxFrame) -> tuple[np.ndarray, np.ndarray]:
-        pelvis_index = self.segment_index["Pelvis"]
-        position = np.asarray(frame.segment_positions[pelvis_index])
-        rotation = quaternion_matrix(frame.segment_quaternions[pelvis_index])
-        delta_position = self.initial_pelvis_rotation.T @ (position - self.initial_pelvis_position)
-        world_position = np.array(
-            [self.scale * delta_position[0], self.scale * delta_position[1], ROOT_HEIGHT + self.scale * delta_position[2]]
-        )
-        world_rotation = rotation @ self.initial_pelvis_rotation.T
-        return world_position, matrix_quaternion(world_rotation)
-
-    def solve(
-        self, frame: MvnxFrame, iterations: int, max_joint_speed: float
-    ) -> tuple[np.ndarray, FrameDiagnostics, dict[str, pin.SE3], dict[str, pin.SE3]]:
-        targets: dict[str, pin.SE3] = {}
-        for robot_frame, human_segment in TASK_SEGMENTS.items():
-            current = self._human_relative(frame, human_segment)
-            human_initial = self.initial_human_relative[robot_frame]
-            robot_initial = self.initial_robot_frames[robot_frame]
-            target_rotation = robot_initial.rotation @ human_initial.rotation.T @ current.rotation
-            target_translation = robot_initial.translation + self.scale * (
-                current.translation - human_initial.translation
-            )
-            target = pin.SE3(target_rotation, target_translation)
-            targets[robot_frame] = target
-            self.tasks[robot_frame].set_target(target)
-
-        all_tasks = [*self.tasks.values(), self.posture]
-        for _ in range(iterations):
-            velocity = pink.solve_ik(
-                self.configuration,
-                all_tasks,
-                dt=1.0 / OUTPUT_RATE,
-                solver="osqp",
-                safety_break=False,
-            )
-            self.configuration.integrate_inplace(velocity, 1.0 / OUTPUT_RATE)
-            self.configuration.q = np.clip(
-                self.configuration.q,
-                self.model.lowerPositionLimit,
-                self.model.upperPositionLimit,
-            )
-            self.configuration.update()
-        if not np.isfinite(self.configuration.q).all():
-            raise RuntimeError(f"IK produced non-finite values at source frame {frame.index}")
-        max_step = max_joint_speed / OUTPUT_RATE
-        requested_step = self.configuration.q - self.last_output_q
-        rate_limited = tuple(
-            name
-            for name, index in self.controlled_joint_indices
-            if abs(requested_step[index]) > max_step + 1e-9
-        )
-        output_q = self.last_output_q + np.clip(
-            requested_step,
-            -max_step,
-            max_step,
-        )
-        self.configuration.q = output_q.copy()
-        self.configuration.update()
-        self.last_output_q = output_q.copy()
-        near_limit = []
-        for name, index in self.controlled_joint_indices:
-            margin = min(
-                output_q[index] - self.model.lowerPositionLimit[index],
-                self.model.upperPositionLimit[index] - output_q[index],
-            )
-            if math.isfinite(float(margin)) and margin <= NEAR_LIMIT_MARGIN:
-                near_limit.append(name)
-
-        achieved = {
-            robot_frame: self.configuration.get_transform_frame_to_world(robot_frame)
-            for robot_frame in TASK_SEGMENTS
-        }
-        position_errors = {}
-        orientation_errors = {}
-        for robot_frame in TASK_SEGMENTS:
-            label = TASK_LABELS[robot_frame]
-            position_errors[label] = float(np.linalg.norm(achieved[robot_frame].translation - targets[robot_frame].translation))
-            rotation_error = targets[robot_frame].rotation.T @ achieved[robot_frame].rotation
-            orientation_errors[label] = float(np.linalg.norm(pin.log3(rotation_error)))
-        diagnostics = FrameDiagnostics(
-            source_frame=frame.index,
-            time_seconds=frame.time_seconds,
-            position_errors_m=position_errors,
-            orientation_errors_rad=orientation_errors,
-            rate_limited_joints=rate_limited,
-            near_limit_joints=tuple(near_limit),
-        )
-        return output_q, diagnostics, targets, achieved
-
-
 def print_diagnostics_summary(recorder: DiagnosticsRecorder) -> None:
     summary = recorder.summary()
     print("IK tracking diagnostics (after joint-speed limiting):")
@@ -512,7 +318,22 @@ def main() -> int:
         camera_prim_path="/OmniverseKit_Persp",
     )
     g1 = Articulation("/World/G1")
-    retargeter = G1Retargeter(args.g1_urdf, metadata, frames[0], args.scale)
+    pink_robot = load_pink_robot(urdf_path=args.g1_urdf)
+    retargeter = G1Retargeter(
+        args.g1_urdf,
+        metadata.segment_names,
+        frames[0],
+        RetargetingConfig(
+            scale=args.scale,
+            iterations=args.ik_steps,
+            max_joint_speed=args.max_joint_speed,
+            solver="osqp",
+        ),
+        model=pink_robot.model,
+        data=pink_robot.data,
+        controlled_joint_names=pink_robot.controlled_joint_names,
+    )
+    pink_robot.q0 = retargeter.last_output_q.copy()
     recorder = DiagnosticsRecorder(tuple(TASK_LABELS.values()))
     trajectory = TrajectoryRecorder(str(args.mvnx), OUTPUT_RATE)
     xsens_display = None if args.hide_xsens else XsensSkeletonDisplay(metadata, frames[0], args.xsens_offset_y)
@@ -539,10 +360,10 @@ def main() -> int:
     if diagnostics_display:
         print("IK diagnostics: desired targets red, achieved frames green, position error lines yellow")
     isaac_indices = {name: index for index, name in enumerate(g1.dof_names)}
-    missing_joints = sorted(set(retargeter.robot.controlled_joint_names) - isaac_indices.keys())
+    missing_joints = sorted(set(retargeter.controlled_joint_names) - isaac_indices.keys())
     if missing_joints:
         raise RuntimeError(f"Isaac G1 is missing IK joints: {', '.join(missing_joints)}")
-    controlled_indices = [isaac_indices[name] for name in retargeter.robot.controlled_joint_names]
+    controlled_indices = [isaac_indices[name] for name in retargeter.controlled_joint_names]
     isaac_positions = np.zeros(len(g1.dof_names), dtype=np.float32)
     zero_dof_velocities = np.zeros((1, len(g1.dof_names)), dtype=np.float32)
     zero_root_velocities = np.zeros((1, 3), dtype=np.float32)
@@ -554,14 +375,12 @@ def main() -> int:
         while simulation_app.is_running():
             for frame in frames:
                 started = time.monotonic()
-                q, diagnostics, targets, achieved = retargeter.solve(frame, args.ik_steps, args.max_joint_speed)
+                result = retargeter.solve(frame)
                 if played < len(frames):
-                    recorder.add(diagnostics)
-                joint_positions = {
-                    name: float(q[index]) for name, index in retargeter.controlled_joint_indices
-                }
+                    recorder.add(result.diagnostics)
+                joint_positions = result.joint_positions
                 controlled_q = np.asarray(
-                    [joint_positions[name] for name in retargeter.robot.controlled_joint_names]
+                    [joint_positions[name] for name in retargeter.controlled_joint_names]
                 )
                 if previous_q is not None:
                     maximum_joint_step = max(maximum_joint_step, float(np.max(np.abs(controlled_q - previous_q))))
@@ -573,7 +392,12 @@ def main() -> int:
                 if xsens_display:
                     xsens_display.update(frame)
                 if diagnostics_display:
-                    diagnostics_display.update(targets, achieved, root_position, root_orientation)
+                    diagnostics_display.update(
+                        result.targets,
+                        result.achieved,
+                        root_position,
+                        root_orientation,
+                    )
                 g1.set_dof_positions(isaac_positions.reshape(1, -1))
                 if not args.dynamic:
                     g1.set_dof_velocities(zero_dof_velocities)

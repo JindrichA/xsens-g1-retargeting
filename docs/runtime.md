@@ -80,7 +80,7 @@ indirect dependencies, not current top-level stack components.
 
 ## Known Structural Debt
 
-- Recorded and live Pink retargeters are separate implementations and use
-  different solvers.
+- Recorded and live paths share one retargeter. They retain different solver
+  selections until an equivalence benchmark justifies changing the baseline.
 - Startup ordering uses fixed delays rather than readiness probes.
 - SONIC state is inferred from terminal output instead of structured health IPC.

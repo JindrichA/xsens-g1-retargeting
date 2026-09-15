@@ -88,7 +88,7 @@ trajectory, not safe motor commands; SONIC provides the dynamic tracking layer.
    tracking remain.
 5. Partial: ROS 2 `/link_states`, canonical live frames, calibration, and a stale
    watchdog are implemented; suit and network-failure validation remain.
-6. Consolidate the recorded and live retargeters, then add packet-loss,
-   pause/resume, acceleration, and large-pose-jump tests.
+6. Partial: recorded and live paths share one retargeter; packet-loss,
+   pause/resume, acceleration, and large-pose-jump tests remain.
 7. Introduce real hardware only behind an explicit profile after simulation
    acceptance criteria pass.

@@ -157,9 +157,13 @@ def main(argv=None) -> int:
                         print(f"Calibrated generation {calibrated_generation}", flush=True)
                     if retargeter is not None:
                         if control["enabled"]:
-                            joint_pos, joint_vel = retargeter.solve(frame)
-                            positions.append(joint_pos)
-                            velocities.append(joint_vel)
+                            result = retargeter.solve(frame)
+                            positions.append(
+                                [result.joint_positions[name] for name in retargeter.controlled_joint_names]
+                            )
+                            velocities.append(
+                                [result.joint_velocities[name] for name in retargeter.controlled_joint_names]
+                            )
                             quaternions.append(list(retargeter.root_quaternion(frame)))
                             positions = positions[-args.window :]
                             velocities = velocities[-args.window :]
