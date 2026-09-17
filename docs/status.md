@@ -8,7 +8,7 @@ repository stack targets a physical robot.
 | Capability | Implemented | Validated | Remaining work |
 | --- | --- | --- | --- |
 | MVNX parsing and validation | Yes | 12-recording source dataset | Preserve dataset provenance |
-| Shared recorded/live Pink IK | Yes | Existing recorded and mock baselines | Tune calibration, scales, contacts, and task weights |
+| Shared recorded/live Pink IK | Yes | Recorded/mock baselines and one measured per-chain scale comparison | Evaluate scales on more clips, then improve calibration, contacts, and task weights |
 | SONIC Protocol v1 export | Yes | Format and transport tests | Improve reference feasibility |
 | SONIC MuJoCo playback | Yes | Initial dynamic run | Add dynamic telemetry and achieve stable baselines |
 | Mock live input | Yes | Atomic boundary and retarget process | Repeat operator-level scenario testing |

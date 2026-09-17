@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -95,15 +96,33 @@ def main(argv=None) -> int:
     parser.add_argument("--warmup", type=int, default=50)
     parser.add_argument("--control", type=Path, default=Path("/tmp/xsens-live-control.json"))
     parser.add_argument("--status", type=Path, default=Path("/tmp/xsens-live-status.json"))
+    parser.add_argument("--scale", type=float, default=0.75, help="Fallback displacement scale")
+    parser.add_argument("--torso-scale", type=float, help="Override torso displacement scale")
+    parser.add_argument("--arm-scale", type=float, help="Override wrist displacement scale")
+    parser.add_argument("--leg-scale", type=float, help="Override ankle displacement scale")
     args = parser.parse_args(argv)
     if args.stale_ms <= 0 or args.warmup < 2 or args.window < args.warmup:
         parser.error("stale-ms must be positive and window must be at least warmup >= 2")
+    if any(
+        value is not None and (not math.isfinite(value) or value <= 0)
+        for value in (args.scale, args.torso_scale, args.arm_scale, args.leg_scale)
+    ):
+        parser.error("all displacement scales must be finite and positive")
     try:
         import zmq
         from .g1_retargeter import G1Retargeter, mvnx_from_live
+        from .retargeting_config import RetargetingConfig
     except ImportError as error:
         print(f"error: Pink, Pinocchio, and pyzmq are required: {error}", file=sys.stderr)
         return 2
+
+    retargeting_config = RetargetingConfig(
+        scale=args.scale,
+        torso_scale=args.torso_scale,
+        arm_scale=args.arm_scale,
+        leg_scale=args.leg_scale,
+        solver="quadprog",
+    )
 
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
@@ -149,7 +168,12 @@ def main(argv=None) -> int:
                     stale_stop_sent = False
                     frame = mvnx_from_live(live, frame_index)
                     if control["calibration_generation"] > calibrated_generation:
-                        retargeter = G1Retargeter(args.urdf, CANONICAL_SEGMENTS, frame)
+                        retargeter = G1Retargeter(
+                            args.urdf,
+                            CANONICAL_SEGMENTS,
+                            frame,
+                            retargeting_config,
+                        )
                         calibrated_generation = control["calibration_generation"]
                         positions.clear()
                         velocities.clear()
@@ -206,6 +230,7 @@ def main(argv=None) -> int:
                 published_windows=published_windows,
                 buffered_frames=len(positions),
                 last_publish_steady_ns=last_publish_steady_ns,
+                retargeting_config=retargeting_config.to_dict(),
             )
             time.sleep(max(0.0, 0.02 - (time.monotonic() - started)))
     finally:

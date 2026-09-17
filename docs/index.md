@@ -13,6 +13,7 @@ belong in one place so setup guides do not become competing architecture maps.
 ## Design And Operation
 
 - [Architecture](architecture.md): stable data contracts and target architecture.
+- [Retargeting Scale Tuning](retargeting_tuning.md): measured per-chain scale comparisons.
 - [SONIC Simulation](sonic_simulation.md): controller installation and operation.
 - [Live Xsens](live_xsens.md): live adapter contract and operator procedure.
 - [Controller Selection](controller_selection.md): why SONIC was selected.

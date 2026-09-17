@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from pathlib import Path
 import sys
@@ -40,6 +41,9 @@ parser.add_argument("--xsens-offset-y", type=float, default=1.5, help="Xsens ske
 parser.add_argument("--max-frames", type=int, default=0, help="Stop after this many 50 Hz frames; 0 plays the clip")
 parser.add_argument("--loop", action="store_true", help="Loop until the Isaac window closes")
 parser.add_argument("--scale", type=float, default=0.75, help="Human displacement to G1 displacement scale")
+parser.add_argument("--torso-scale", type=float, help="Override displacement scale for the torso task")
+parser.add_argument("--arm-scale", type=float, help="Override displacement scale for both wrist tasks")
+parser.add_argument("--leg-scale", type=float, help="Override displacement scale for both ankle tasks")
 parser.add_argument("--ik-steps", type=int, default=4, help="Pink solver iterations per output frame")
 parser.add_argument("--max-joint-speed", type=float, default=4.0, help="Retargeted joint speed limit in rad/s")
 parser.add_argument("--no-realtime", action="store_true", help="Do not pace playback to 50 Hz")
@@ -55,8 +59,11 @@ parser.add_argument(
 )
 args, _ = parser.parse_known_args()
 
-if args.scale <= 0:
-    parser.error("--scale must be positive")
+if any(
+    value is not None and (not math.isfinite(value) or value <= 0)
+    for value in (args.scale, args.torso_scale, args.arm_scale, args.leg_scale)
+):
+    parser.error("all displacement scales must be finite and positive")
 if args.ik_steps <= 0:
     parser.error("--ik-steps must be positive")
 if args.max_joint_speed <= 0:
@@ -319,23 +326,29 @@ def main() -> int:
     )
     g1 = Articulation("/World/G1")
     pink_robot = load_pink_robot(urdf_path=args.g1_urdf)
+    retargeting_config = RetargetingConfig(
+        scale=args.scale,
+        torso_scale=args.torso_scale,
+        arm_scale=args.arm_scale,
+        leg_scale=args.leg_scale,
+        iterations=args.ik_steps,
+        max_joint_speed=args.max_joint_speed,
+        solver="osqp",
+    )
     retargeter = G1Retargeter(
         args.g1_urdf,
         metadata.segment_names,
         frames[0],
-        RetargetingConfig(
-            scale=args.scale,
-            iterations=args.ik_steps,
-            max_joint_speed=args.max_joint_speed,
-            solver="osqp",
-        ),
+        retargeting_config,
         model=pink_robot.model,
         data=pink_robot.data,
         controlled_joint_names=pink_robot.controlled_joint_names,
     )
     pink_robot.q0 = retargeter.last_output_q.copy()
     recorder = DiagnosticsRecorder(tuple(TASK_LABELS.values()))
-    trajectory = TrajectoryRecorder(str(args.mvnx), OUTPUT_RATE)
+    trajectory = TrajectoryRecorder(
+        str(args.mvnx), OUTPUT_RATE, retargeting_config.to_dict()
+    )
     xsens_display = None if args.hide_xsens else XsensSkeletonDisplay(metadata, frames[0], args.xsens_offset_y)
     if xsens_display:
         xsens_display.update(frames[0])

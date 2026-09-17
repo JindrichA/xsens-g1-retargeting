@@ -44,11 +44,17 @@ SONIC_G1_JOINT_ORDER = (
 
 
 class TrajectoryRecorder:
-    def __init__(self, source: str, rate_hz: int = 50):
+    def __init__(
+        self,
+        source: str,
+        rate_hz: int = 50,
+        retargeting_config: Mapping[str, object] | None = None,
+    ):
         if rate_hz <= 0:
             raise ValueError("trajectory rate must be positive")
         self.source = source
         self.rate_hz = rate_hz
+        self.retargeting_config = dict(retargeting_config) if retargeting_config else None
         self.source_frames: list[int] = []
         self.joint_positions: list[tuple[float, ...]] = []
         self.joint_velocities: list[tuple[float, ...]] = []
@@ -124,6 +130,8 @@ class TrajectoryRecorder:
             "quaternion_order": "wxyz",
             "world_axes": "X-forward, Y-left, Z-up",
         }
+        if self.retargeting_config is not None:
+            metadata["retargeting_config"] = self.retargeting_config
         (directory / "trajectory_metadata.json").write_text(
             json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
         )

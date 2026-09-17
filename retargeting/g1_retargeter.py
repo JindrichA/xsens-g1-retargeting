@@ -159,7 +159,8 @@ class G1Retargeter:
             target = pin.SE3(
                 robot_initial.rotation @ human_initial.rotation.T @ current.rotation,
                 robot_initial.translation
-                + self.config.scale * (current.translation - human_initial.translation),
+                + self.config.scale_for(robot_frame)
+                * (current.translation - human_initial.translation),
             )
             targets[robot_frame] = target
             self.tasks[robot_frame].set_target(target)

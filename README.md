@@ -13,6 +13,7 @@ or enabled.
 - [Documentation index](docs/index.md)
 - [Current implementation status](docs/status.md)
 - [Runtime and dependency map](docs/runtime.md)
+- [Retargeting scale tuning](docs/retargeting_tuning.md)
 - [SONIC simulation manual](docs/sonic_simulation.md)
 - [Live Xsens manual](docs/live_xsens.md)
 
@@ -84,6 +85,7 @@ mock, and live distinctions.
 | --- | --- | --- |
 | `python3 motionctl.py ...` | Inspect and validate MVNX | Host Python |
 | `python3 batch_export.py` | Export recordings through Isaac/Pink | Host orchestrator + Isaac |
+| `python -m retargeting.compare_retargeting` | Compare named scale-profile manifests | Host Python |
 | `python3 retargetctl.py ...` | Describe, check, start, and stop stacks | Host Python |
 | `./run_isaac_g1_playback.sh` | Kinematic G1 visualization/export | Isaac Sim Python |
 | `python -m retargeting.sonic_gui` | Simulation operator console | `.conda-sonic-stream` |

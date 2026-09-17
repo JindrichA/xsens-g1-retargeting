@@ -19,7 +19,7 @@ explains boundaries shared by multiple stacks.
 
 | Runtime | Runs | Must not be mixed with |
 | --- | --- | --- |
-| Host Python 3 | `retargetctl.py`, `motionctl.py`, batch orchestration | Project-specific simulation packages |
+| Host Python 3 | `retargetctl.py`, `motionctl.py`, batch/comparison orchestration | Project-specific simulation packages |
 | ROS 2 Jazzy | Xsens source and `live_capture_ros` | Isaac Sim and SONIC virtual environments |
 | Conda `tv` | Pink, Pinocchio, NumPy, quadprog, live retargeting | ROS 2 package installation |
 | `.conda-sonic-stream` | PyQt GUI and pyzmq recorded publisher | ROS 2 and SONIC simulator packages |

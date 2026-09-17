@@ -48,6 +48,14 @@ class TrajectoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "right_wrist_yaw_joint"):
             self.recorder.add(0, {}, (0, 0, 0), (1, 0, 0, 0))
 
+    def test_writes_retargeting_configuration(self):
+        recorder = TrajectoryRecorder("motion.mvnx", retargeting_config={"arm_scale": 0.8})
+        positions = {name: 0.0 for name in SONIC_G1_JOINT_ORDER}
+        recorder.add(0, positions, (0, 0, 0.76), (1, 0, 0, 0))
+        directory = recorder.write(Path(self.directory.name) / "configured")
+        metadata = json.loads((directory / "trajectory_metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["retargeting_config"], {"arm_scale": 0.8})
+
 
 if __name__ == "__main__":
     unittest.main()
