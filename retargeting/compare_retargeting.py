@@ -53,18 +53,27 @@ def comparison_rows(manifest_paths: list[Path]) -> list[dict[str, object]]:
             raise ComparisonError(f"profile {profile!r} contains failed or malformed recordings")
         try:
             profile_frames = {
-                entry["recording"]: entry["diagnostics"]["frame_count"] for entry in entries
+                entry["recording"]: (
+                    entry.get("start_frame", 0),
+                    entry["diagnostics"]["frame_count"],
+                )
+                for entry in entries
             }
             if len(profile_frames) != len(entries) or any(
-                isinstance(count, bool) or not isinstance(count, int) or count <= 0
-                for count in profile_frames.values()
+                isinstance(start, bool)
+                or not isinstance(start, int)
+                or start < 0
+                or isinstance(count, bool)
+                or not isinstance(count, int)
+                or count <= 0
+                for start, count in profile_frames.values()
             ):
                 raise ComparisonError(f"profile {profile!r} has invalid recording frame counts")
             if expected_frames is None:
                 expected_frames = profile_frames
             elif profile_frames != expected_frames:
                 raise ComparisonError(
-                    f"profile {profile!r} does not contain the same recordings and frame counts"
+                    f"profile {profile!r} does not contain the same recording windows and frame counts"
                 )
             for entry in entries:
                 diagnostics = entry["diagnostics"]
@@ -80,6 +89,7 @@ def comparison_rows(manifest_paths: list[Path]) -> list[dict[str, object]]:
                 row: dict[str, object] = {
                     "profile": profile,
                     "recording": entry["recording"],
+                    "start_frame": entry.get("start_frame", 0),
                     "scale": config["scale"],
                     "torso_scale": config["torso_scale"],
                     "arm_scale": config["arm_scale"],
@@ -124,6 +134,7 @@ def write_comparison(path: Path, rows: list[dict[str, object]]) -> Path:
     fields = [
         "profile",
         "recording",
+        "start_frame",
         "scale",
         "torso_scale",
         "arm_scale",

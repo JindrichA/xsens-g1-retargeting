@@ -39,6 +39,7 @@ parser.add_argument("--hide-xsens", action="store_true", help="Hide the synchron
 parser.add_argument("--hide-diagnostics", action="store_true", help="Hide desired/achieved IK markers")
 parser.add_argument("--xsens-offset-y", type=float, default=1.5, help="Xsens skeleton lateral display offset in meters")
 parser.add_argument("--max-frames", type=int, default=0, help="Stop after this many 50 Hz frames; 0 plays the clip")
+parser.add_argument("--start-frame", type=int, default=0, help="First 50 Hz output frame to record after IK pre-roll")
 parser.add_argument("--loop", action="store_true", help="Loop until the Isaac window closes")
 parser.add_argument("--scale", type=float, default=0.75, help="Human displacement to G1 displacement scale")
 parser.add_argument("--torso-scale", type=float, help="Override displacement scale for the torso task")
@@ -70,6 +71,8 @@ if args.max_joint_speed <= 0:
     parser.error("--max-joint-speed must be positive")
 if args.max_frames < 0:
     parser.error("--max-frames cannot be negative")
+if args.start_frame < 0:
+    parser.error("--start-frame cannot be negative")
 if args.screenshot_frame < 0:
     parser.error("--screenshot-frame cannot be negative")
 
@@ -303,12 +306,19 @@ def main() -> int:
             raise FileNotFoundError(required)
     g1_usd = ensure_g1_usd(args.g1_urdf)
 
-    metadata, frames = resample(args.mvnx)
+    metadata, all_frames = resample(args.mvnx)
+    if args.start_frame >= len(all_frames):
+        raise ValueError(
+            f"start frame {args.start_frame} is outside recording with {len(all_frames)} output frames"
+        )
+    calibration_frame = all_frames[0]
+    pre_roll_frames = all_frames[: args.start_frame]
+    frames = all_frames[args.start_frame :]
     if args.max_frames:
         frames = frames[: args.max_frames]
     print(
         f"Loaded {args.mvnx.name}: {len(frames)} output frames at {OUTPUT_RATE} Hz "
-        f"from {metadata.frame_rate} Hz Xsens data"
+        f"from {metadata.frame_rate} Hz Xsens data; pre-roll {len(pre_roll_frames)} frames"
     )
 
     stage = omni.usd.get_context().get_stage()
@@ -338,12 +348,14 @@ def main() -> int:
     retargeter = G1Retargeter(
         args.g1_urdf,
         metadata.segment_names,
-        frames[0],
+        calibration_frame,
         retargeting_config,
         model=pink_robot.model,
         data=pink_robot.data,
         controlled_joint_names=pink_robot.controlled_joint_names,
     )
+    for frame in pre_roll_frames:
+        retargeter.solve(frame)
     pink_robot.q0 = retargeter.last_output_q.copy()
     recorder = DiagnosticsRecorder(tuple(TASK_LABELS.values()))
     trajectory = TrajectoryRecorder(

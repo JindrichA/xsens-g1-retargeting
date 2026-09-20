@@ -81,7 +81,16 @@ class CompareRetargetingTests(unittest.TestCase):
         changed["recordings"][0]["recording"] = "other.mvnx"
         second = self.root / "changed.json"
         second.write_text(json.dumps(changed), encoding="utf-8")
-        with self.assertRaisesRegex(ComparisonError, "same recordings and frame counts"):
+        with self.assertRaisesRegex(ComparisonError, "same recording windows and frame counts"):
+            comparison_rows([first, second])
+
+    def test_rejects_mismatched_start_frames(self):
+        first = self.write_manifest("baseline")
+        changed = manifest("changed")
+        changed["recordings"][0]["start_frame"] = 500
+        second = self.root / "changed-start.json"
+        second.write_text(json.dumps(changed), encoding="utf-8")
+        with self.assertRaisesRegex(ComparisonError, "same recording windows"):
             comparison_rows([first, second])
 
     def test_rejects_malformed_successful_entry(self):
