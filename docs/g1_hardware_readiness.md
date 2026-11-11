@@ -15,6 +15,66 @@ control contract remain unavailable. The DDS low-state message
 contains raw version words, not the human-readable firmware string, so the
 diagnostic does not claim to verify `V1.5.1.1` from DDS.
 
+## Control Ownership Mental Model
+
+The critical question is not only which topic receives a message, but which
+controller currently owns each joint.
+
+| Operating model | Leg and balance owner | Waist and arm owner | Exact Xsens whole-body replay |
+| --- | --- | --- | --- |
+| Regular Mode without an overlay | Unitree | Unitree | No |
+| Regular Mode with `rt/arm_sdk` | Unitree | External overlay while weight is nonzero | No; upper body only |
+| Physical SONIC/`rt/lowcmd` | SONIC would need exclusive authority | SONIC would need exclusive authority | Intended, but not commissioned |
+
+Regular Mode FSM 501 is not the same as unrestricted external control. It keeps
+the onboard locomotion and balance controller active. The Arm SDK weight blends
+external upper-body targets into that controller; weight zero returns upper-body
+ownership to Unitree.
+
+The Arm SDK packet has 35 motor slots, but on this 29-DOF robot its active
+contract covers 17 upper-body joints: three waist joints and fourteen arm
+joints. The executor holds the measured waist targets and changes only the arm
+targets. Leg slots remain disabled in every Arm SDK packet.
+
+SONIC is different. A physical SONIC controller would generate the coordinated
+whole-body command, including balance and leg behavior. Regular Mode cannot
+remain the competing owner of those same joints. A clean mode transition and a
+verified fallback are therefore prerequisites, not optional setup details.
+
+## What Can Be Replayed Now
+
+| Xsens content | Regular Mode Arm SDK | Future physical SONIC |
+| --- | --- | --- |
+| Shoulder, elbow, and wrist joints | Yes, as bounded relative motion | Intended |
+| Waist motion | Technically part of the overlay; currently held for stability | Intended |
+| Hip, knee, and ankle angles | No | Intended |
+| Floating-base position and orientation | No | Intended through whole-body tracking |
+| Walking path | Approximate only through high-level velocity commands | Intended as coordinated tracking |
+| Finger motion | No; this robot has dummy hands | No without actuated hands |
+
+"Full recording" can mean two different things. The complete recording timeline
+can be played through the arm overlay, but only its bounded arm deltas are sent.
+That is not full-body replay. Exact lower-body and root imitation requires the
+whole-body controller path.
+
+## Choose The Correct Path
+
+Use the read-only diagnostic when the goal is to verify connectivity, firmware
+identity evidence, controller mode, CRC, temperatures, or motor faults.
+
+Use the offline `LowCmd` dry run when the goal is to inspect joint order,
+interpolation, CRC construction, URDF bounds, or stale-template behavior. It
+does not establish physical command safety.
+
+Use the Arm SDK executor when the goal is a finite, bounded physical arm
+demonstration while Regular Mode maintains balance. Require FSM 501, a clear
+workspace, remote emergency stop, cool motors, and the explicit profile.
+
+Use SONIC in MuJoCo when the goal is coordinated whole-body imitation,
+controller tuning, or failure testing. Do not move that path to the physical
+robot until the Unitree firmware control contract and fail-safe lifecycle are
+known and validated.
+
 ## Local Dry Run
 
 Select `Unitree G1`, open `G1 Hardware`, choose a recording in the recording
@@ -85,6 +145,19 @@ conventions and are not accepted for physical diagnostics.
 
 No successful readiness report should be interpreted as permission to actuate.
 
+## Terms And Signals
+
+| Term | Meaning in this project |
+| --- | --- |
+| FSM 0 | Locomotion service inactive in the observed experiments; Arm SDK targets were not tracked |
+| FSM 501 | Operator-selected Unitree Regular Mode with three waist degrees of freedom |
+| `rt/lowstate` | Read-only feedback used for CRC, pose, mode, temperature, and motor checks |
+| `rt/arm_sdk` | High-level 17-joint upper-body overlay used with Regular Mode |
+| `rt/lowcmd` | Low-level whole-body command topic; this repository does not physically publish it |
+| Arm SDK weight | Blend authority in motor slot 29; zero releases the overlay, one requests full upper-body overlay authority |
+| `mode_machine=5` | Observed 29-DOF machine mode copied into Arm SDK packets; not by itself proof of command authority |
+| SONIC reference | 29-joint positions/velocities plus root orientation consumed by the SONIC controller; not a Unitree motor packet |
+
 ## Offline LowCmd Dry Run
 
 The offline generator validates the official 35-slot HG message layout, maps the
@@ -132,8 +205,9 @@ pose, and released by ramping the documented Arm SDK weight in slot 29 to zero.
 Physical mode is never the default. It additionally requires the explicit
 `g1-edu-plus-arm-sdk-v3` profile, wired interface, operator acknowledgement,
 three fresh CRC-valid low-state samples, mode 5, bounded tilt, normal arm motor
-states, temperatures at or below 55 C, and tracking error below 0.25 rad. The
-remote emergency stop and a clear arm workspace remain operator requirements.
+states, a 45 C cool-start limit, a 55 C runtime limit, and tracking error below
+0.25 rad. The remote emergency stop and a clear arm workspace remain operator
+requirements.
 An execution is rejected if feedback does not show at least 0.01 rad of arm
 motion; successful publication alone is not reported as successful tracking.
 Each Arm SDK message copies the fresh `mode_machine` value from LowState, sets

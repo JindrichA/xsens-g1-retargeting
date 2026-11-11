@@ -9,6 +9,25 @@ alternative complete tracking stack.
 This decision is based on the public projects as checked on 2026-08-10. It is a
 simulation decision, not approval for real-robot deployment.
 
+## Simulation Decision Versus Physical Authority
+
+Selecting SONIC answers which controller should be evaluated for coordinated
+whole-body tracking. It does not automatically grant that controller safe
+authority over a physical G1.
+
+In MuJoCo, SONIC owns the simulated whole-body loop and can track legs, waist,
+arms, and root behavior together. On the physical robot, Unitree Regular Mode
+currently owns balance and locomotion. The validated `rt/arm_sdk` path adds only
+a bounded upper-body overlay; it is not SONIC and cannot replay lower-body Xsens
+joint trajectories exactly.
+
+Moving SONIC from simulation to hardware requires an exclusive and documented
+controller transition, low-level command cadence, watchdog semantics,
+emergency-stop behavior, approved gains, and a safe return to onboard control.
+Until those requirements are obtained and commissioned, SONIC remains the
+selected simulation and long-term whole-body controller, not an enabled
+physical execution mode.
+
 ## Why SONIC First
 
 - The local sibling checkout is current and already contains the MuJoCo loop,

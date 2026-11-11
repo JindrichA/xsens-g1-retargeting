@@ -30,6 +30,29 @@ Mock MVNX -> atomic live frame -> Pink live retargeter -------------+-> SONIC ->
 MVN Studio -> ROS 2 -> atomic live frame -> Pink live retargeter ---+
 ```
 
+## Physical G1 Control Boundary
+
+There are two different G1 control models in this project. They must not be
+treated as interchangeable or run against the same joints at the same time.
+
+| Model | Balance and legs | Upper body | Current status |
+| --- | --- | --- | --- |
+| Unitree Regular Mode + `rt/arm_sdk` | Unitree onboard controller | External waist/arm overlay | Guarded physical arm playback validated in FSM 501 |
+| SONIC whole-body control | SONIC | SONIC | Simulation path available; physical path not commissioned |
+
+Regular Mode can reproduce recorded arm motion while Unitree keeps the robot
+standing. It cannot exactly replay Xsens hip, knee, ankle, root-position, or
+root-orientation trajectories because the onboard controller owns locomotion
+and balance. Dummy hands cannot reproduce finger motion.
+
+SONIC is the long-term path for coordinated whole-body imitation. Physical
+SONIC requires exclusive whole-body authority plus verified watchdog, stale
+command, emergency-stop, gain, and controller-recovery behavior. Those firmware
+contracts are still missing, so physical `rt/lowcmd` transmission remains
+disabled. See [G1 hardware readiness](docs/g1_hardware_readiness.md) for the
+operator model and [the experiment log](docs/g1_physical_experiments.md) for
+measured results.
+
 The environments are deliberately separate:
 
 | Part | Runtime |
