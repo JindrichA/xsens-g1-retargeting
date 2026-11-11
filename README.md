@@ -4,8 +4,9 @@ Simulation-first tools for converting recorded or live Xsens whole-body motion
 into Unitree G1 references tracked by the GR00T SONIC controller.
 
 The project currently supports recorded playback, a device-free mock live path,
-and an experimental ROS 2 live adapter. Physical robot execution is not defined
-or enabled.
+and an experimental ROS 2 live adapter. Physical G1 support is limited to
+read-only diagnostics, offline packet checks, and an explicit guarded Arm SDK
+upper-body executor; physical whole-body SONIC control is not enabled.
 
 ## Start Here
 
@@ -16,6 +17,8 @@ or enabled.
 - [Retargeting scale tuning](docs/retargeting_tuning.md)
 - [SONIC simulation manual](docs/sonic_simulation.md)
 - [Live Xsens manual](docs/live_xsens.md)
+- [G1 hardware readiness](docs/g1_hardware_readiness.md)
+- [G1 physical experiment log](docs/g1_physical_experiments.md)
 
 ## System At A Glance
 
@@ -76,6 +79,11 @@ In the GUI:
 5. Enable mock live input only after the GUI reports it is ready.
 6. Keep the emergency-stop control available throughout the trial.
 
+The `G1 Hardware` workspace performs local evidence checks and exposes a
+subscriber-only `rt/lowstate` diagnostic. A separate CLI-only Arm SDK executor
+supports explicit, finite upper-body commissioning in Regular Mode. Whole-body
+`rt/lowcmd` and physical SONIC control remain blocked.
+
 See [Getting Started](START_GUIDE.md) for setup and the exact recorded,
 mock, and live distinctions.
 
@@ -94,6 +102,9 @@ mock, and live distinctions.
 | `python -m retargeting.live_capture_ros` | ROS pose to atomic frame | ROS 2 Jazzy |
 | `python -m retargeting.live_retarget` | Atomic frame to SONIC reference | Conda `tv` |
 | `python -m retargeting.mock_live_stream` | MVNX to atomic live frame | GUI/host-compatible Python |
+| `python -m retargeting.g1_dds_diagnostics ...` | Read-only physical G1 diagnostics | `.venv-g1-readonly` |
+| `python -m retargeting.g1_lowcmd_dry_run ...` | Build and validate G1 low-level packets without transport | `.venv-g1-readonly` |
+| `python -m retargeting.g1_arm_sdk_playback ...` | Explicit guarded G1 upper-body playback | `.venv-g1-readonly` |
 
 ## Repository Layout
 

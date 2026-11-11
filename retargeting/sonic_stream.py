@@ -57,6 +57,23 @@ def load_trajectory(directory: str | Path) -> tuple[list[list[float]], list[list
     return joint_pos, joint_vel, body_quat
 
 
+def select_trajectory_window(joint_pos, joint_vel, body_quat, start_frame: int, frame_count: int | None):
+    if start_frame < 0:
+        raise SonicStreamError("start frame cannot be negative")
+    if frame_count is not None and frame_count <= 0:
+        raise SonicStreamError("frame count must be positive")
+    end_frame = len(joint_pos) if frame_count is None else start_frame + frame_count
+    if start_frame >= len(joint_pos) or end_frame > len(joint_pos):
+        raise SonicStreamError(
+            f"trajectory window [{start_frame}, {end_frame}) exceeds {len(joint_pos)} frames"
+        )
+    return (
+        joint_pos[start_frame:end_frame],
+        joint_vel[start_frame:end_frame],
+        body_quat[start_frame:end_frame],
+    )
+
+
 def pack_protocol_v1(
     joint_pos: Sequence[Sequence[float]],
     joint_vel: Sequence[Sequence[float]],
@@ -146,6 +163,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--startup-delay", type=float, default=1.0, help="seconds for subscribers to connect")
     parser.add_argument("--hold-seconds", type=float, default=0.5, help="seconds to keep the socket open after send")
     parser.add_argument("--catch-up", action="store_true", help="allow SONIC to catch up after large frame gaps")
+    parser.add_argument("--start-frame", type=int, default=0, help="first trajectory frame to publish")
+    parser.add_argument("--frame-count", type=int, help="number of frames to publish (default: through the end)")
     parser.add_argument("--dry-run", action="store_true", help="validate and pack without opening a socket")
     args = parser.parse_args(argv)
     if args.startup_delay < 0 or args.hold_seconds < 0:
@@ -153,6 +172,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         joint_pos, joint_vel, body_quat = load_trajectory(args.trajectory)
+        joint_pos, joint_vel, body_quat = select_trajectory_window(
+            joint_pos,
+            joint_vel,
+            body_quat,
+            args.start_frame,
+            args.frame_count,
+        )
         message = pack_protocol_v1(joint_pos, joint_vel, body_quat, catch_up=args.catch_up)
         print(f"Validated {len(joint_pos)} frames; packed {len(message)} bytes of SONIC protocol v1")
         if not args.dry_run:

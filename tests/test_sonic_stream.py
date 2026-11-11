@@ -4,7 +4,13 @@ import struct
 import tempfile
 import unittest
 
-from retargeting.sonic_stream import HEADER_SIZE, SonicStreamError, load_trajectory, pack_protocol_v1
+from retargeting.sonic_stream import (
+    HEADER_SIZE,
+    SonicStreamError,
+    load_trajectory,
+    pack_protocol_v1,
+    select_trajectory_window,
+)
 from retargeting.trajectory import SONIC_G1_JOINT_ORDER, TrajectoryRecorder
 
 
@@ -65,6 +71,18 @@ class SonicStreamTests(unittest.TestCase):
         path.write_text("w,x,y,z\n2,0,0,0\n1,0,0,0\n", encoding="utf-8")
         with self.assertRaisesRegex(SonicStreamError, "not normalized"):
             load_trajectory(self.directory)
+
+    def test_selects_bounded_trajectory_window(self):
+        joint_pos, joint_vel, body_quat = load_trajectory(self.directory)
+        selected = select_trajectory_window(joint_pos, joint_vel, body_quat, 1, 1)
+        self.assertEqual(selected[0], joint_pos[1:2])
+        self.assertEqual(selected[1], joint_vel[1:2])
+        self.assertEqual(selected[2], body_quat[1:2])
+
+    def test_rejects_trajectory_window_past_end(self):
+        joint_pos, joint_vel, body_quat = load_trajectory(self.directory)
+        with self.assertRaisesRegex(SonicStreamError, "exceeds 2 frames"):
+            select_trajectory_window(joint_pos, joint_vel, body_quat, 1, 2)
 
 
 if __name__ == "__main__":

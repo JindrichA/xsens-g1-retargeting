@@ -16,6 +16,8 @@ belong in one place so setup guides do not become competing architecture maps.
 - [Retargeting Scale Tuning](retargeting_tuning.md): measured per-chain scale comparisons.
 - [SONIC Simulation](sonic_simulation.md): controller installation and operation.
 - [Live Xsens](live_xsens.md): live adapter contract and operator procedure.
+- [G1 Hardware Readiness](g1_hardware_readiness.md): diagnostics, offline packet checks, and guarded Arm SDK operation.
+- [G1 Physical Experiments](g1_physical_experiments.md): dated trials, measured results, blockers, and next steps.
 - [Controller Selection](controller_selection.md): why SONIC was selected.
 
 ## Results And Development

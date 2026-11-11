@@ -1,9 +1,10 @@
 # Current Project Status
 
-Last reviewed: 2026-09-15.
+Last reviewed: 2026-11-11.
 
-This project is an experimental, simulation-only Xsens-to-G1 control plane. No
-repository stack targets a physical robot.
+This project is an experimental, simulation-first Xsens-to-G1 control plane.
+No repository stack starts physical whole-body control. A separate guarded
+command supports finite physical G1 upper-body commissioning.
 
 | Capability | Implemented | Validated | Remaining work |
 | --- | --- | --- | --- |
@@ -16,7 +17,7 @@ repository stack targets a physical robot.
 | Unique-frame stale watchdog | Yes, 250 ms | Unit tested | Add acknowledged stop behavior |
 | Joint position and velocity limiting | Yes | Unit/integration coverage is partial | Add direct retargeter tests |
 | Acceleration and pose-jump limiting | No | No | Implement before unrestricted live trials |
-| Physical G1 output | No | No | Requires a separate explicit profile and acceptance gate |
+| Physical G1 output | Subscriber-only diagnostics, offline `LowCmd` construction, and explicit `rt/arm_sdk` upper-body playback; whole-body transmission remains absent | Regular Mode FSM 501 tracked corrected 17-slot upper-body commands up to 0.2946 rad with 0.0382 rad peak error; CRC, waist hold, release, and motor checks passed | Cool and evaluate the prepared bounded full arm sequence; obtain the manufacturer control contract before any whole-body transport |
 
 ## Safety Interpretation
 
@@ -28,3 +29,14 @@ the stop request has no structured controller acknowledgement.
 Simulation acceptance still needs machine-readable fall, root tilt, foot slip,
 tracking-error, and torque-saturation metrics. Real-robot work remains blocked
 until those criteria and emergency procedures are defined and passed.
+
+Physical G1 experiments established that Regular Mode can retain onboard
+balance while `rt/arm_sdk` overlays the three waist and fourteen arm slots. The
+executor holds the measured waist pose and applies only arm deltas. This is not
+whole-body Xsens imitation: Regular Mode still owns the legs and floating-base
+behavior. The current full-arm v3 candidate is documented but unexecuted because
+its 45 C cool-start gate observed a 53 C shoulder. Physical SONIC/`rt/lowcmd`
+remains blocked by unknown firmware watchdog, stale-command, gain, emergency
+stop, and controller-restoration contracts. See the
+[G1 physical experiment log](g1_physical_experiments.md) for measured trials and
+next steps.
